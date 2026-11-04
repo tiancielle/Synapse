@@ -1,0 +1,14 @@
+env_synapse/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+*.token
+token*.json
+credentials*.json
+node_modules/
+.next/
+data/private/
+.vscode/
+secrets/
