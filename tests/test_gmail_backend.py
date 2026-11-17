@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import base64
 
+import httplib2
 import pytest
-from mail_backend import MAX_BODY_CHARS, GmailMailBackend
+from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
+from mail_backend import GmailMailBackend
+from google_auth import SCOPES_GMAIL_READONLY
 
 
 def _b64(texte: str) -> str:
@@ -13,23 +17,39 @@ def _b64(texte: str) -> str:
 
 
 class _Exec:
-    def __init__(self, payload):
+    def __init__(self, payload=None, error=None):
         self.payload = payload
+        self.error = error
 
     def execute(self):
+        if self.error is not None:
+            raise self.error
         return self.payload
+
+
+def _http_error(status: int) -> HttpError:
+    return HttpError(
+        httplib2.Response({"status": status}),
+        b'{"error": {"message": "PRIVATE_HTTP_ERROR_BODY"}}',
+    )
 
 
 class _Messages:
     """Imite users().messages() : list / get (chaîne réelle de googleapiclient)."""
 
-    def __init__(self, by_id: dict[str, dict]):
+    def __init__(self, by_id: dict[str, dict], *, get_error_status=None, list_error_status=None,
+                 get_refresh_error=False):
         self.by_id = by_id
+        self.get_error_status = get_error_status
+        self.list_error_status = list_error_status
+        self.get_refresh_error = get_refresh_error
         self.list_calls: list[dict] = []
         self.get_calls: list[dict] = []
 
     def list(self, **kwargs):
         self.list_calls.append(kwargs)
+        if self.list_error_status is not None:
+            return _Exec(error=_http_error(self.list_error_status))
         max_results = int(kwargs.get("maxResults") or 100)
         ids = list(self.by_id.keys())[:max_results]
         return _Exec({"messages": [{"id": i, "threadId": f"t-{i}"} for i in ids]})
@@ -37,8 +57,12 @@ class _Messages:
     def get(self, **kwargs):
         self.get_calls.append(kwargs)
         mid = kwargs["id"]
+        if self.get_refresh_error:
+            return _Exec(error=RefreshError("PRIVATE_REFRESH_ERROR_CONTENT"))
+        if self.get_error_status is not None:
+            return _Exec(error=_http_error(self.get_error_status))
         if mid not in self.by_id:
-            raise KeyError(mid)
+            return _Exec(error=_http_error(404))
         msg = self.by_id[mid]
         fmt = kwargs.get("format", "full")
         if fmt == "metadata":
@@ -66,8 +90,12 @@ class _Users:
 class FakeGmailService:
     """Imite service.users().messages().list/get — aucun accès réseau."""
 
-    def __init__(self, by_id: dict[str, dict]):
-        self._messages = _Messages(by_id)
+    def __init__(self, by_id: dict[str, dict], *, get_error_status=None, list_error_status=None,
+                 get_refresh_error=False):
+        self._messages = _Messages(
+            by_id, get_error_status=get_error_status, list_error_status=list_error_status,
+            get_refresh_error=get_refresh_error,
+        )
 
     def users(self):
         return _Users(self._messages)
@@ -115,9 +143,13 @@ def _msg(mid, *, frm="", to="", subject="", date_hdr=None, internal=None,
     }
 
 
-def make_backend(messages: list[dict]):
+def make_backend(messages: list[dict], *, get_error_status=None, list_error_status=None,
+                 get_refresh_error=False):
     by_id = {m["id"]: m for m in messages}
-    service = FakeGmailService(by_id)
+    service = FakeGmailService(
+        by_id, get_error_status=get_error_status, list_error_status=list_error_status,
+        get_refresh_error=get_refresh_error,
+    )
     return GmailMailBackend(service=service), service
 
 
@@ -150,6 +182,24 @@ def test_empty_query_lists_without_q_and_caps_limit_at_50():
     call = service._messages.list_calls[-1]
     assert "q" not in call
     assert call["maxResults"] == 50
+
+
+def test_search_uses_metadata_only_and_read_requests_full_message():
+    backend, service = make_backend([_msg("g1", plain="corps")])
+
+    backend.search()
+    search_get = service._messages.get_calls[-1]
+    assert search_get["format"] == "metadata"
+    assert search_get["metadataHeaders"] == ["From", "Subject", "Date"]
+
+    backend.read("g1")
+    read_get = service._messages.get_calls[-1]
+    assert read_get["format"] == "full"
+    assert "metadataHeaders" not in read_get
+
+
+def test_gmail_scope_is_readonly_and_exact():
+    assert SCOPES_GMAIL_READONLY == ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
 def test_read_decodes_base64url_plain_body():
@@ -187,14 +237,24 @@ def test_html_only_is_converted_to_text_without_tags_or_remote_attrs():
     corps = backend.read("g4")["corps"]
     assert "Hello" in corps and "world" in corps
     assert "<" not in corps and "alert" not in corps
+    assert "color:red" not in corps
     assert "evil.example" not in corps and "pixel" not in corps
 
 
+def test_hidden_html_text_is_preserved():
+    backend, _ = make_backend([
+        _msg("g-hidden", html="<p>Visible</p><div style='display:none'>Hidden text</div>")
+    ])
+    corps = backend.read("g-hidden")["corps"]
+    assert "Visible" in corps
+    assert "Hidden text" in corps
+
+
 def test_long_body_is_truncated():
-    long = "A" * (MAX_BODY_CHARS + 500)
+    long = "A" * (4000 + 500)
     backend, _ = make_backend([_msg("g5", plain=long, subject="Long")])
     corps = backend.read("g5")["corps"]
-    assert len(corps) == MAX_BODY_CHARS
+    assert len(corps) == 4000
     assert corps.endswith("…")
 
 
@@ -238,6 +298,37 @@ def test_unknown_mail_id_raises():
     backend, _ = make_backend([_msg("g1", plain="x")])
     with pytest.raises(ValueError, match="introuvable"):
         backend.read("inconnu")
+
+
+@pytest.mark.parametrize("status", [403, 429, 500])
+def test_http_errors_do_not_expose_mail_or_response_content(status):
+    mail = _msg("g1", subject="PRIVATE_SUBJECT", plain="PRIVATE_MAIL_BODY")
+    backend, _ = make_backend([mail], get_error_status=status)
+    with pytest.raises(RuntimeError) as exc_info:
+        backend.read("g1")
+    message = str(exc_info.value)
+    assert "PRIVATE_SUBJECT" not in message
+    assert "PRIVATE_MAIL_BODY" not in message
+    assert "PRIVATE_HTTP_ERROR_BODY" not in message
+
+
+def test_refresh_error_during_api_call_requests_reconnection_without_exposing_content():
+    mail = _msg("g1", subject="PRIVATE_SUBJECT", plain="PRIVATE_MAIL_BODY")
+    backend, _ = make_backend([mail], get_refresh_error=True)
+    with pytest.raises(RuntimeError) as exc_info:
+        backend.read("g1")
+    message = str(exc_info.value)
+    assert "connect_gmail.py" in message
+    assert "expiré ou révoqué" in message
+    assert "PRIVATE_SUBJECT" not in message
+    assert "PRIVATE_MAIL_BODY" not in message
+    assert "PRIVATE_REFRESH_ERROR_CONTENT" not in message
+
+
+def test_http_404_during_search_is_reported_as_generic_gmail_error():
+    backend, _ = make_backend([], list_error_status=404)
+    with pytest.raises(RuntimeError, match="Échec de l'accès à Gmail"):
+        backend.search("mot-clé")
 
 
 def test_backend_has_no_write_methods():

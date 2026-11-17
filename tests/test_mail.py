@@ -133,6 +133,18 @@ def test_registry_matches_what_the_server_exposes_and_send_needs_confirmation(tm
     assert decide("mail", "supprimer_mail") is Decision.DENY          # outil inconnu : refusé par défaut
 
 
+def test_gmail_backend_exposes_only_read_tools(tmp_path):
+    async def scenario():
+        env = {
+            "SYNAPSE_MAIL_BACKEND": "gmail",
+            "SYNAPSE_STATE_DIR": str(tmp_path),
+        }
+        async with Toolbox("mail", SERVER, env=env) as tb:
+            return sorted(tool.name for tool in tb.tools)
+
+    assert asyncio.run(scenario()) == ["chercher_mails", "lire_mail"]
+
+
 def test_server_tools_end_to_end(tmp_path):
     async def scenario():
         async with Toolbox("mail", SERVER, env={"SYNAPSE_STATE_DIR": str(tmp_path)}) as tb:

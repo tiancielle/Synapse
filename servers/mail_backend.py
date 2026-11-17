@@ -254,10 +254,15 @@ class GmailMailBackend:
 
     def _execute(self, request, *, mail_id: str | None = None):
         """Exécute un appel Gmail ; messages d'erreur sans aucun contenu de mail."""
+        from google.auth.exceptions import RefreshError
         from googleapiclient.errors import HttpError
 
         try:
             return request.execute()
+        except RefreshError as exc:
+            raise RuntimeError(
+                "Accès Gmail expiré ou révoqué : relance python connect_gmail.py"
+            ) from exc
         except HttpError as exc:
             status = _http_error_status(exc)
             if status == 404 and mail_id is not None:
@@ -265,10 +270,6 @@ class GmailMailBackend:
             raise RuntimeError(
                 "Échec de l'accès à Gmail. Réessaie plus tard ou relance : python connect_gmail.py"
             ) from exc
-        except KeyError as exc:
-            if mail_id is not None:
-                raise ValueError(f"Mail introuvable : {mail_id}") from exc
-            raise
 
     def _get_message(self, mail_id: str, *, format: str, metadata_headers: list[str] | None = None) -> dict:
         kwargs = {"userId": "me", "id": mail_id, "format": format}
