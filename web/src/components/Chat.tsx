@@ -28,6 +28,8 @@ import {
 import { useHealth } from "@/lib/useHealth";
 import type { AgentEvent, AgentMessage, Conversation } from "@/lib/types";
 
+const TOKEN_BATCH_MS = 40;
+
 type Run = { convId: string; msgId: string };
 
 /** Applique une modification au message de l'agent d'une conversation. */
@@ -57,7 +59,7 @@ export default function Chat() {
     abort.current = controller;
     setRun({ convId, msgId });
 
-    const onEvent = (event: AgentEvent) => {
+    const apply = (event: AgentEvent) => {
       patchAgent(
         convId,
         msgId,
@@ -70,9 +72,35 @@ export default function Chat() {
       );
     };
 
+    // Regroupement des tokens : certains modèles envoient un caractère par token. On les accumule et on met
+    // l'écran à jour au plus toutes les 40 ms, au lieu d'un rendu complet par caractère.
+    let tokenBuffer = "";
+    let tokenTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushTokens = () => {
+      if (tokenTimer !== undefined) {
+        clearTimeout(tokenTimer);
+        tokenTimer = undefined;
+      }
+      if (!tokenBuffer) return;
+      const text = tokenBuffer;
+      tokenBuffer = "";
+      apply({ type: "token", text });
+    };
+
+    const onEvent = (event: AgentEvent) => {
+      if (event.type === "token") {
+        tokenBuffer += event.text;
+        if (tokenTimer === undefined) tokenTimer = setTimeout(flushTokens, TOKEN_BATCH_MS);
+        return;
+      }
+      flushTokens(); // tout autre événement : on affiche d'abord le texte en attente, pour garder l'ordre
+      apply(event);
+    };
+
     try {
       await streamPost(path, body, onEvent, controller.signal);
     } catch (e) {
+      flushTokens();
       if (controller.signal.aborted) {
         // Arrêt demandé : le serveur peut avoir interrompu l'agent en plein milieu. Par prudence, la conversation
         // repart sur une nouvelle session (l'agent n'a plus la mémoire des échanges précédents).
@@ -83,6 +111,7 @@ export default function Chat() {
         void refresh(); // l'API est peut-être éteinte : on met le badge à jour
       }
     } finally {
+      flushTokens();
       abort.current = null;
       setRun(null);
     }
