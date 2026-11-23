@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import httplib2
 import pytest
@@ -114,6 +116,8 @@ def _msg(mid, *, frm="", to="", subject="", date_hdr=None, internal=None,
         headers.append({"name": "Subject", "value": subject})
     if date_hdr:
         headers.append({"name": "Date", "value": date_hdr})
+        if internal is None:      # Gmail fournit toujours internalDate : on le déduit de l'en-tête Date
+            internal = str(int(parsedate_to_datetime(date_hdr).timestamp() * 1000))
 
     if parts is not None:
         payload = {"mimeType": "multipart/mixed", "headers": headers, "parts": parts}
@@ -144,13 +148,14 @@ def _msg(mid, *, frm="", to="", subject="", date_hdr=None, internal=None,
 
 
 def make_backend(messages: list[dict], *, get_error_status=None, list_error_status=None,
-                 get_refresh_error=False):
+                 get_refresh_error=False, tz=timezone.utc):
+    """tz=UTC par défaut : les tests ne dépendent pas du fuseau de la machine."""
     by_id = {m["id"]: m for m in messages}
     service = FakeGmailService(
         by_id, get_error_status=get_error_status, list_error_status=list_error_status,
         get_refresh_error=get_refresh_error,
     )
-    return GmailMailBackend(service=service), service
+    return GmailMailBackend(service=service, tz=tz), service
 
 
 def test_search_returns_fixture_shaped_dicts_and_compte_gmail():
@@ -337,3 +342,71 @@ def test_backend_has_no_write_methods():
     backend, _ = make_backend([])
     assert not hasattr(backend, "create_draft")
     assert not hasattr(backend, "send")
+
+
+# --- filtres de recherche (expéditeur, sujet, date, heure, non lus) --------------------------------
+
+def _ms(texte_utc: str) -> str:
+    """« 2026-11-22T09:00 » (UTC) -> internalDate Gmail, en millisecondes."""
+    return str(int(datetime.fromisoformat(texte_utc).replace(tzinfo=timezone.utc).timestamp() * 1000))
+
+
+def _trois_mails():
+    return [
+        _msg("g-matin", frm="Hamza Fadil <hamza@exemple.test>", subject="Offre ingénieur IA",
+             internal=_ms("2026-11-22T09:00"), labels=["INBOX", "UNREAD"], snippet="Poste à Rabat"),
+        _msg("g-aprem", frm="Sara <sara@exemple.test>", subject="Rappel déjeuner",
+             internal=_ms("2026-11-22T15:30"), labels=["INBOX"], snippet="Vendredi ?"),
+        _msg("g-veille", frm="Hamza Fadil <hamza@exemple.test>", subject="Offre manager",
+             internal=_ms("2026-11-21T23:59"), labels=["INBOX", "UNREAD"], snippet="Autre poste"),
+    ]
+
+
+def _ids(hits):
+    return {h["id"] for h in hits}
+
+
+def test_search_filters_by_day_and_by_hour():
+    backend, _ = make_backend(_trois_mails())
+    assert _ids(backend.search(depuis="2026-11-22", jusqu_a="2026-11-22")) == {"g-matin", "g-aprem"}
+    assert _ids(backend.search(depuis="2026-11-22T12:00", jusqu_a="2026-11-22T18:00")) == {"g-aprem"}
+    assert _ids(backend.search(jusqu_a="2026-11-21")) == {"g-veille"}
+
+
+def test_search_filters_by_sender_subject_and_unread_and_combines_them():
+    backend, _ = make_backend(_trois_mails())
+    assert _ids(backend.search(expediteur="hamza")) == {"g-matin", "g-veille"}
+    assert _ids(backend.search(expediteur="SARA")) == {"g-aprem"}
+    assert _ids(backend.search(sujet="offre")) == {"g-matin", "g-veille"}
+    assert _ids(backend.search(non_lus=True)) == {"g-matin", "g-veille"}
+    assert _ids(backend.search(expediteur="hamza", non_lus=True, depuis="2026-11-22")) == {"g-matin"}
+
+
+def test_search_sends_the_equivalent_gmail_operators_with_a_safety_margin():
+    backend, service = make_backend(_trois_mails())
+    backend.search(expediteur="Sara", sujet="rappel", depuis="2026-11-22", jusqu_a="2026-11-22", non_lus=True)
+    jour = int(datetime(2026, 11, 22, tzinfo=timezone.utc).timestamp())
+    assert service._messages.list_calls[-1]["q"] == (
+        f"from:(Sara) subject:(rappel) after:{jour - 60} before:{jour + 86400 + 60} is:unread")
+
+
+def test_dates_and_filters_use_the_users_timezone_not_utc():
+    # 23h30 UTC le 22 novembre = 00h30 le 23 novembre en UTC+1 (heure du Maroc hors Ramadan)
+    backend, _ = make_backend([_msg("g-nuit", plain="x", subject="Tard", internal=_ms("2026-11-22T23:30"))],
+                              tz=timezone(timedelta(hours=1)))
+    assert backend.read("g-nuit")["date"] == "2026-11-23T00:30"
+    assert _ids(backend.search(jusqu_a="2026-11-22")) == set()
+    assert _ids(backend.search(depuis="2026-11-23")) == {"g-nuit"}
+
+
+def test_invalid_date_is_rejected_before_any_api_call():
+    backend, service = make_backend(_trois_mails())
+    with pytest.raises(ValueError, match="AAAA-MM-JJ"):
+        backend.search(depuis="hier")
+    assert service._messages.list_calls == [] and service._messages.get_calls == []
+
+
+def test_default_limit_is_five():
+    backend, service = make_backend(_trois_mails())
+    backend.search()
+    assert service._messages.list_calls[-1]["maxResults"] == 5

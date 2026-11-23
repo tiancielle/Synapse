@@ -3,6 +3,8 @@
 - FixtureMailBackend : données synthétiques (tests, évaluation, démo hors-ligne)
 - GmailMailBackend  : vrai Gmail, LECTURE SEULE (aucune méthode d'écriture)
 
+Les deux backends acceptent les mêmes filtres de recherche (voir mail_filters.py) : expéditeur, sujet,
+bornes de date et d'heure, non lus, mots-clés.
 Les clés commençant par _ dans la fixture sont des étiquettes d'évaluation :
 elles ne sont JAMAIS renvoyées par les outils.
 Les écritures fixture (brouillons, envois) ne touchent aucune vraie boîte.
@@ -12,10 +14,12 @@ from __future__ import annotations
 import base64
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, tzinfo
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
+
+from mail_filters import LIMITE_DEFAUT, construire_filtres, correspond, date_locale, lire_date_fixture, requete_gmail
 
 
 def _public(mail: dict) -> dict:
@@ -61,17 +65,19 @@ class FixtureMailBackend:
         if not sujet.strip():
             raise ValueError("Le sujet ne peut pas être vide")
 
-    def search(self, query: str = "", account: str = "", limit: int = 10) -> list[dict]:
-        """Mails les plus récents d'abord. Requête vide = tous les mails (du compte si précisé)."""
+    def search(self, query: str = "", account: str = "", limit: int = LIMITE_DEFAUT, *, expediteur: str = "",
+               sujet: str = "", depuis: str = "", jusqu_a: str = "", non_lus: bool = False) -> list[dict]:
+        """Mails les plus récents d'abord, filtrés. Sans filtre : les plus récents (du compte si précisé)."""
         self._check_account(account, required=False)
-        q = query.lower()
+        f = construire_filtres(requete=query, expediteur=expediteur, sujet=sujet, depuis=depuis,
+                               jusqu_a=jusqu_a, non_lus=non_lus, limite=limit)
         hits = [m for m in self.mails
                 if (not account or m["compte"] == account)
-                and (not q or q in m["sujet"].lower() or q in m["de"].lower() or q in m["corps"].lower())]
+                and correspond(f, de=m["de"], sujet=m["sujet"], texte=m["corps"],
+                               date=lire_date_fixture(m["date"]), lu=m["lu"])]
         hits.sort(key=lambda m: m["date"], reverse=True)
-        limit = max(1, min(int(limit), 50))
         return [{"id": m["id"], "compte": m["compte"], "de": m["de"], "sujet": m["sujet"],
-                 "date": m["date"], "lu": m["lu"], "apercu": _apercu(m["corps"])} for m in hits[:limit]]
+                 "date": m["date"], "lu": m["lu"], "apercu": _apercu(m["corps"])} for m in hits[:f.limite]]
 
     def read(self, mail_id: str) -> dict:
         for m in self.mails:
@@ -152,21 +158,27 @@ def _header(headers: list[dict] | None, name: str) -> str:
     return ""
 
 
-def _format_date(headers: list[dict] | None, internal_date: str | None) -> str:
-    """Date au format fixture « YYYY-MM-DDTHH:MM » (horloge du Date header, sinon UTC via internalDate)."""
+def _date_du_mail(headers: list[dict] | None, internal_date, tz: tzinfo | None) -> datetime | None:
+    """Date de RÉCEPTION en heure locale (sans fuseau). On préfère internalDate (fiable, en UTC), converti
+    dans le fuseau de l'utilisateur ; repli sur l'en-tête Date, converti de la même façon."""
+    dt = date_locale(internal_date, tz)
+    if dt is not None:
+        return dt
     raw = _header(headers, "Date")
     if raw:
         try:
-            dt = parsedate_to_datetime(raw)
-            if dt.tzinfo is not None:
-                dt = dt.replace(tzinfo=None)  # conserve l'heure « murale » du mail
-            return dt.strftime("%Y-%m-%dT%H:%M")
+            parsed = parsedate_to_datetime(raw)
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(tz)          # tz=None : fuseau de la machine
+            return parsed.replace(tzinfo=None)
         except (TypeError, ValueError, IndexError, OverflowError):
-            pass
-    if internal_date not in (None, ""):
-        dt = datetime.fromtimestamp(int(internal_date) / 1000, tz=timezone.utc).replace(tzinfo=None)
-        return dt.strftime("%Y-%m-%dT%H:%M")
-    return ""
+            return None
+    return None
+
+
+def _iso(dt: datetime | None) -> str:
+    """Format commun aux deux backends : « YYYY-MM-DDTHH:MM »."""
+    return dt.strftime("%Y-%m-%dT%H:%M") if dt else ""
 
 
 def _part_est_piece_jointe(part: dict) -> bool:
@@ -222,11 +234,13 @@ class GmailMailBackend:
     """Gmail en lecture seule (palier 1). Aucune méthode create_draft / send.
 
     `service` : client googleapiclient (injecté en tests ; sinon OAuth lecture seule).
+    `tz` : fuseau de l'utilisateur pour les dates et les filtres (None = fuseau de la machine).
     Ne journalise jamais le contenu des mails.
     """
 
-    def __init__(self, service=None):
+    def __init__(self, service=None, tz: tzinfo | None = None):
         self._service = service
+        self._tz = tz
         self.accounts: list[str] = ["gmail"]
 
     @property
@@ -277,13 +291,17 @@ class GmailMailBackend:
             kwargs["metadataHeaders"] = metadata_headers
         return self._execute(self.service.users().messages().get(**kwargs), mail_id=mail_id)
 
-    def search(self, query: str = "", account: str = "", limit: int = 10) -> list[dict]:
-        """Recherche Gmail (syntaxe boîte de recherche). Requête vide = boîte récente bornée."""
+    def search(self, query: str = "", account: str = "", limit: int = LIMITE_DEFAUT, *, expediteur: str = "",
+               sujet: str = "", depuis: str = "", jusqu_a: str = "", non_lus: bool = False) -> list[dict]:
+        """Recherche Gmail avec les mêmes filtres que le backend de test. Les filtres sont envoyés à Gmail
+        (from:, subject:, after:, before:, is:unread) PUIS revérifiés ici sur la date exacte de réception."""
         self._check_account(account)
-        limit = max(1, min(int(limit), 50))
-        kwargs: dict = {"userId": "me", "maxResults": limit}
-        if query:
-            kwargs["q"] = query
+        f = construire_filtres(requete=query, expediteur=expediteur, sujet=sujet, depuis=depuis,
+                               jusqu_a=jusqu_a, non_lus=non_lus, limite=limit)
+        kwargs: dict = {"userId": "me", "maxResults": f.limite}
+        q = requete_gmail(f, self._tz)
+        if q:
+            kwargs["q"] = q
         listed = self._execute(self.service.users().messages().list(**kwargs))
         out = []
         for stub in listed.get("messages") or []:
@@ -293,16 +311,20 @@ class GmailMailBackend:
                 mid, format="metadata", metadata_headers=["From", "Subject", "Date"]
             )
             headers = (msg.get("payload") or {}).get("headers")
-            labels = msg.get("labelIds") or []
-            corps_apercu = msg.get("snippet") or ""
+            lu = "UNREAD" not in (msg.get("labelIds") or [])
+            apercu = msg.get("snippet") or ""
+            date = _date_du_mail(headers, msg.get("internalDate"), self._tz)
+            de, objet = _header(headers, "From"), _header(headers, "Subject")
+            if not correspond(f, de=de, sujet=objet, texte=apercu, date=date, lu=lu, verifier_requete=False):
+                continue
             out.append({
                 "id": mid,
                 "compte": "gmail",
-                "de": _header(headers, "From"),
-                "sujet": _header(headers, "Subject"),
-                "date": _format_date(headers, msg.get("internalDate")),
-                "lu": "UNREAD" not in labels,
-                "apercu": _apercu(corps_apercu),
+                "de": de,
+                "sujet": objet,
+                "date": _iso(date),
+                "lu": lu,
+                "apercu": _apercu(apercu),
             })
         return out
 
@@ -316,7 +338,7 @@ class GmailMailBackend:
             "de": _header(headers, "From"),
             "a": _header(headers, "To"),
             "sujet": _header(headers, "Subject"),
-            "date": _format_date(headers, msg.get("internalDate")),
+            "date": _iso(_date_du_mail(headers, msg.get("internalDate"), self._tz)),
             "corps": _extract_corps(msg.get("payload")),
             "lu": "UNREAD" not in labels,
         }
