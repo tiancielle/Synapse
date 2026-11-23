@@ -211,7 +211,7 @@ def test_read_decodes_base64url_plain_body():
     # padding volontairement absent (comportement Gmail)
     raw = _b64("Bonjour depuis Gmail")
     assert "=" not in raw
-    backend, _ = make_backend([_msg("g2", frm="a@b.test", to="moi@gmail.com",
+    backend, _ = make_backend([_msg("g2", frm="a@b.test", to="moi@exemple.test",
                                     subject="Sujet", plain="Bonjour depuis Gmail",
                                     date_hdr="Fri, 17 Oct 2026 09:00:00 +0000",
                                     labels=["INBOX"])])
@@ -219,12 +219,12 @@ def test_read_decodes_base64url_plain_body():
     assert set(mail) == {"id", "compte", "de", "a", "sujet", "date", "corps", "lu"}
     assert mail["corps"] == "Bonjour depuis Gmail"
     assert mail["compte"] == "gmail" and mail["lu"] is True
-    assert mail["a"] == "moi@gmail.com" and mail["date"] == "2026-10-17T09:00"
+    assert mail["a"] == "moi@exemple.test" and mail["date"] == "2026-10-17T09:00"
 
 
 def test_multipart_prefers_text_plain_over_html():
     backend, _ = make_backend([_msg(
-        "g3", frm="x@y.test", to="moi@gmail.com", subject="Multi",
+        "g3", frm="x@y.test", to="moi@exemple.test", subject="Multi",
         plain="Version texte", html="<p>Version <b>HTML</b></p>",
     )])
     assert backend.read("g3")["corps"] == "Version texte"
@@ -265,7 +265,7 @@ def test_long_body_is_truncated():
 
 def test_missing_from_or_subject_become_empty_strings():
     backend, _ = make_backend([_msg(
-        "g6", frm="", subject="", to="moi@gmail.com", plain="corps",
+        "g6", frm="", subject="", to="moi@exemple.test", plain="corps",
         internal="1729087200000",  # pas de Date header
     )])
     mail = backend.read("g6")
@@ -353,11 +353,11 @@ def _ms(texte_utc: str) -> str:
 
 def _trois_mails():
     return [
-        _msg("g-matin", frm="Hamza Fadil <hamza@exemple.test>", subject="Offre ingénieur IA",
+        _msg("g-matin", frm="Nour Testeur <nour@exemple.test>", subject="Offre ingénieur IA",
              internal=_ms("2026-11-22T09:00"), labels=["INBOX", "UNREAD"], snippet="Poste à Rabat"),
         _msg("g-aprem", frm="Sara <sara@exemple.test>", subject="Rappel déjeuner",
              internal=_ms("2026-11-22T15:30"), labels=["INBOX"], snippet="Vendredi ?"),
-        _msg("g-veille", frm="Hamza Fadil <hamza@exemple.test>", subject="Offre manager",
+        _msg("g-veille", frm="Nour Testeur <nour@exemple.test>", subject="Offre manager",
              internal=_ms("2026-11-21T23:59"), labels=["INBOX", "UNREAD"], snippet="Autre poste"),
     ]
 
@@ -375,11 +375,11 @@ def test_search_filters_by_day_and_by_hour():
 
 def test_search_filters_by_sender_subject_and_unread_and_combines_them():
     backend, _ = make_backend(_trois_mails())
-    assert _ids(backend.search(expediteur="hamza")) == {"g-matin", "g-veille"}
+    assert _ids(backend.search(expediteur="nour")) == {"g-matin", "g-veille"}
     assert _ids(backend.search(expediteur="SARA")) == {"g-aprem"}
     assert _ids(backend.search(sujet="offre")) == {"g-matin", "g-veille"}
     assert _ids(backend.search(non_lus=True)) == {"g-matin", "g-veille"}
-    assert _ids(backend.search(expediteur="hamza", non_lus=True, depuis="2026-11-22")) == {"g-matin"}
+    assert _ids(backend.search(expediteur="nour", non_lus=True, depuis="2026-11-22")) == {"g-matin"}
 
 
 def test_search_sends_the_equivalent_gmail_operators_with_a_safety_margin():
@@ -404,6 +404,20 @@ def test_invalid_date_is_rejected_before_any_api_call():
     with pytest.raises(ValueError, match="AAAA-MM-JJ"):
         backend.search(depuis="hier")
     assert service._messages.list_calls == [] and service._messages.get_calls == []
+
+
+def test_more_results_are_signalled_even_when_the_exact_filter_drops_some():
+    # Gmail renvoie 2 mails (page pleine pour limite=2) ; la marge de 60 s laisse passer g-veille (23h59 le 21),
+    # que le filtre exact écarte. Il reste peut-être d'autres mails : il ne faut pas dire « tout a été vu ».
+    backend, _ = make_backend([m for m in _trois_mails() if m["id"] in ("g-matin", "g-veille")])
+    mails, il_en_reste = backend.search_page(depuis="2026-11-22", limit=2)
+    assert _ids(mails) == {"g-matin"} and il_en_reste is True
+
+
+def test_no_more_results_when_gmail_returns_a_partial_page_without_next_token():
+    backend, _ = make_backend(_trois_mails())
+    mails, il_en_reste = backend.search_page(limit=10)
+    assert len(mails) == 3 and il_en_reste is False
 
 
 def test_default_limit_is_five():
