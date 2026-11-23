@@ -1,4 +1,4 @@
-"""API FastAPI de Synapse (locale). Le navigateur ne voit jamais les clés ni le jeton Google.
+"""API FastAPI de Tandem (locale). Le navigateur ne voit jamais les clés ni le jeton Google.
 
 POST /api/chat     {session_id, message}   -> flux d'événements (SSE)
 POST /api/confirm  {session_id, approved}  -> reprend après une confirmation humaine (SSE)
@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
+import os
 from contextlib import asynccontextmanager
-from datetime import date
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -20,17 +19,13 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent.dates import DATE_DEMO, reperes_dates
 from agent.fakes import NaiveVictimLLM
-from agent.firewall import Firewall
-from agent.graph import build_graph
 from agent.llm import get_llm
-from agent.tools import Toolbox
+from agent.runtime import open_runtime, verifier_connexion_gmail, verifier_connexion_google
 from api.service import AgentService
-from api.settings import DEFENSE_PRESETS, ROOT, Settings
+from api.settings import ROOT, Settings
 
 log = logging.getLogger("synapse.api")
-SERVER = ROOT / "servers" / "calendar_server.py"
 SESSION_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
 
@@ -63,26 +58,27 @@ def _stream(service: AgentService, make_events) -> StreamingResponse:
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, llm_factory=None) -> FastAPI:
+    """`llm_factory(spec) -> modèle` : permet aux tests de fournir un modèle sans Ollama."""
     settings = settings or Settings.from_env()
+    make_llm = llm_factory or get_llm
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         load_dotenv(ROOT / ".env")
-        if settings.source == "google" and not (ROOT / "secrets" / "token_calendar.json").exists():
-            raise RuntimeError("Pas encore connecté à Google. Lance d'abord :  python connect_google.py")
-        llm = NaiveVictimLLM() if settings.demo else get_llm(settings.llm_spec)
-        firewall = Firewall(DEFENSE_PRESETS[settings.defenses], audit_path=settings.audit_path)
-        jour_ref = date.today() if settings.source == "google" else DATE_DEMO
-        env = {"SYNAPSE_BACKEND": "google" if settings.source == "google" else "fixture",
-               "SYNAPSE_STATE_DIR": tempfile.mkdtemp(prefix="synapse_api_")}
-        async with Toolbox("calendar", SERVER, env=env, log_path=ROOT / "servers" / "calendar_server.log") as toolbox:
-            graph = build_graph(toolbox, llm, firewall, reperes_dates(jour_ref))
-            app.state.service = AgentService(graph, firewall)
+        verifier_connexion_google(settings.source)
+        verifier_connexion_gmail(settings.mail_source)
+        llm = NaiveVictimLLM() if settings.demo else make_llm(settings.llm_spec)
+        # nom du modèle annoncé au frontend (lu APRÈS load_dotenv) ; null en mode démo
+        app.state.llm_name = None if settings.demo else (settings.llm_spec or os.getenv("SYNAPSE_LLM"))
+        async with open_runtime(source=settings.source, defenses=settings.defenses, llm=llm,
+                                mail_source=settings.mail_source,
+                                audit_path=settings.audit_path, state_prefix="synapse_api_") as rt:
+            app.state.service = AgentService(rt.graph, rt.firewall)
             app.state.settings = settings
             yield
 
-    app = FastAPI(title="Synapse API", lifespan=lifespan)
+    app = FastAPI(title="Tandem API", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.allowed_origins),
                        allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))
@@ -90,7 +86,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health(request: Request):
         s: Settings = request.app.state.settings
-        return {"status": "ok", "source": s.source, "defenses": s.defenses, "model": "demo" if s.demo else "llm"}
+        return {"status": "ok", "source": s.source, "mail_source": s.mail_source,
+                "defenses": s.defenses, "model": "demo" if s.demo else "llm",
+                "llm": request.app.state.llm_name}
 
     @app.post("/api/chat")
     async def chat(req: ChatRequest, request: Request):

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from api.events import EventTranslator
+from api.events import EventTranslator, translate_message_chunk
 
 
 class AgentService:
@@ -31,8 +31,15 @@ class AgentService:
         cfg = {"configurable": {"thread_id": session_id}}
         translator = EventTranslator(self.fw)
         interruption = None
-        async for chunk in self.graph.astream(entree, cfg, stream_mode="updates"):
-            for node, update in chunk.items():
+        # deux flux en un : « updates » (étapes du graphe) et « messages » (tokens du modèle)
+        async for mode, data in self.graph.astream(entree, cfg, stream_mode=["updates", "messages"]):
+            if mode == "messages":
+                chunk, metadata = data
+                token = translate_message_chunk(chunk, metadata)
+                if token:
+                    yield token
+                continue
+            for node, update in data.items():
                 if node == "__interrupt__":
                     interruption = update[0].value
                 else:

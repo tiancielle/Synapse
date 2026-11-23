@@ -1,10 +1,11 @@
-"""Chat en terminal avec l'agent Synapse.
+"""Chat en terminal avec l'agent Tandem.
 
     python chat.py                      -> modèle défini par SYNAPSE_LLM dans .env (ex. ollama:qwen3.5:4b)
     python chat.py --demo               -> modèle simulé, sans Ollama (pour tester l'interface)
     python chat.py --defenses aucune    -> sans aucune défense (pour voir la différence)
     python chat.py --defenses registre  -> confirmation humaine seule, sans nettoyage des résultats
     python chat.py --source google      -> VRAI Google Calendar en lecture seule (après python connect_google.py)
+    python chat.py --mail-source gmail  -> VRAI Gmail en lecture seule (après python connect_gmail.py)
 
 Commandes dans le chat :  /audit  (journal d'audit)   /quitter
 """
@@ -12,40 +13,21 @@ import argparse
 import asyncio
 import json
 import sys
-import tempfile
-from datetime import date, timedelta      # ← modif 1 : timedelta ajouté
-from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from agent.fakes import NaiveVictimLLM
-from agent.firewall import DefenseConfig, Firewall
-from agent.graph import build_graph
 from agent.llm import get_llm
-from agent.tools import Toolbox
+from agent.runtime import (DEFENSE_PRESETS, ROOT, open_runtime, verifier_connexion_gmail,
+                           verifier_connexion_google)
 
-ROOT = Path(__file__).resolve().parent
-SERVER = ROOT / "servers" / "calendar_server.py"
-JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
-DATE_DEMO = date(2026, 10, 18)     # « aujourd'hui » dans le calendrier de test (un dimanche)
-
-DEFENSES = {
-    "toutes": DefenseConfig(),
-    "aucune": DefenseConfig.baseline(),
-    "registre": DefenseConfig(use_registry=True, require_confirmation=True, scan_results=False, hardened_prompt=False),
-}
+LIBELLES_ISSUE = {"executed": "exécuté", "blocked": "BLOQUÉ", "error": "ÉCHEC"}
 
 
-# ← modif 2 : nouvelle fonction de repères temporels
-def reperes_dates(jour_ref):
-    """Texte de repères (aujourd'hui, demain, jours à venir) pour éviter que le modèle calcule les dates lui-même."""
-    def nom(d):
-        return f"{JOURS[d.weekday()]} {d.isoformat()}"
-    suivants = [jour_ref + timedelta(days=i) for i in range(1, 8)]
-    return (f"{nom(jour_ref)} (aujourd'hui). Demain = {nom(suivants[0])}. Après-demain = {nom(suivants[1])}. "
-            f"Jours à venir : " + ", ".join(nom(d) for d in suivants))
+def libelle_issue(outcome: str) -> str:
+    return LIBELLES_ISSUE.get(outcome, outcome)
 
 
 def court(texte, n=110):
@@ -67,14 +49,12 @@ def afficher(noeud, maj, fw, deja_vus):
             print(f"  [pare-feu]  {p['name']} -> {p['decision']} ({p['reason']})")
     elif noeud == "tools":
         for e in fw.audit[deja_vus[0]:]:
-            etat = "exécuté" if e["outcome"] == "executed" else "BLOQUÉ"
-            print(f"  [résultat]  {e['tool']} : {etat}")
+            print(f"  [résultat]  {e['tool']} : {libelle_issue(e['outcome'])}")
+            if e["outcome"] == "error":
+                print("  [ERREUR]    l'outil a échoué (cause dans servers/calendar_server.log)")
             if e["findings"]:
                 print(f"  [ALERTE]    injection détectée et retirée du résultat : {e['findings']}")
         deja_vus[0] = len(fw.audit)
-        for m in maj.get("messages", []):
-            if str(m.content).startswith('{"erreur"'):
-                print(f"  [ERREUR]    l'outil {m.name} a échoué : {court(m.content, 220)}")
     elif noeud == "verify":
         if maj.get("verified"):
             print("  [vérif]     réponse validée")
@@ -117,27 +97,24 @@ def afficher_audit(fw):
 
 async def main(args):
     load_dotenv(ROOT / ".env")
-    if args.source == "google" and not (ROOT / "secrets" / "token_calendar.json").exists():
-        print("Pas encore connecté à Google. Lance d'abord :  python connect_google.py")
+    try:
+        verifier_connexion_google(args.source)
+        verifier_connexion_gmail(args.mail_source)
+    except RuntimeError as erreur:
+        print(erreur)
         return
     llm = NaiveVictimLLM() if args.demo else get_llm()
-    fw = Firewall(DEFENSES[args.defenses], audit_path=ROOT / "data" / "private" / "audit.jsonl")
-    jour_ref = date.today() if args.source == "google" else DATE_DEMO
-    aujourdhui = reperes_dates(jour_ref)      # ← modif 3 : repères complets pour le graphe
-    # calendrier de test remis à zéro à chaque lancement (dossier temporaire)
-    env = {"SYNAPSE_BACKEND": "google" if args.source == "google" else "fixture",
-           "SYNAPSE_STATE_DIR": tempfile.mkdtemp(prefix="synapse_chat_")}
-
-    async with Toolbox("calendar", SERVER, env=env, log_path=ROOT / "servers" / "calendar_server.log") as tb:
-        graph = build_graph(tb, llm, fw, aujourdhui)
+    async with open_runtime(source=args.source, defenses=args.defenses, llm=llm,
+                            mail_source=args.mail_source, state_prefix="synapse_chat_") as rt:
         cfg = {"configurable": {"thread_id": "chat"}}
         deja_vus = [0]
         print("=" * 70)
-        print(f" Synapse | modèle : {'simulé (--demo)' if args.demo else 'défini par SYNAPSE_LLM'} | défenses : {args.defenses}")
-        if args.source == "google":                                                    # ← modif 4 : en-tête allégé
-            print(f" Date du jour : {jour_ref.isoformat()} | VRAI Google Calendar (lecture seule)")
+        print(f" Tandem | modèle : {'simulé (--demo)' if args.demo else 'défini par SYNAPSE_LLM'} | défenses : {args.defenses}")
+        if args.source == "google":
+            print(f" Date du jour : {rt.jour_ref.isoformat()} | VRAI Google Calendar (lecture seule)")
         else:
-            print(f" Date simulée : {jour_ref.isoformat()} | calendrier de test (données fictives)")
+            print(f" Date simulée : {rt.jour_ref.isoformat()} | calendrier de test (données fictives)")
+        print(f" Mail : {'VRAI Gmail (lecture seule)' if args.mail_source == 'gmail' else 'données de test (fixture)'}")
         print(" Commandes : /audit  /quitter")
         print("=" * 70)
         while True:
@@ -148,18 +125,20 @@ async def main(args):
             if texte in ("/quitter", "/q"):
                 break
             if texte == "/audit":
-                afficher_audit(fw)
+                afficher_audit(rt.firewall)
             elif texte:
-                await tour(graph, texte, cfg, fw, deja_vus)
+                await tour(rt.graph, texte, cfg, rt.firewall, deja_vus)
     print("\nAu revoir. Journal d'audit enregistré dans data/private/audit.jsonl")
 
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="Chat en terminal avec l'agent Synapse")
+    parser = argparse.ArgumentParser(description="Chat en terminal avec l'agent Tandem")
     parser.add_argument("--demo", action="store_true", help="modèle simulé (sans Ollama)")
-    parser.add_argument("--defenses", choices=list(DEFENSES), default="toutes")
+    parser.add_argument("--defenses", choices=list(DEFENSE_PRESETS), default="toutes")
     parser.add_argument("--source", choices=["test", "google"], default="test",
                         help="test = données fictives ; google = vrai Google Calendar (lecture seule)")
+    parser.add_argument("--mail-source", choices=["test", "gmail"], default="test",
+                        help="test = mails fictifs ; gmail = vrai Gmail (lecture seule)")
     asyncio.run(main(parser.parse_args()))

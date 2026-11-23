@@ -3,6 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.fakes import NaiveVictimLLM
 from agent.firewall import Firewall
 from api.events import EventTranslator
 from api.main import create_app
@@ -27,7 +28,18 @@ def types(events):
 def test_health():
     with make_client() as client:
         body = client.get("/api/health").json()
-    assert body == {"status": "ok", "source": "test", "defenses": "toutes", "model": "demo"}
+    assert body == {"status": "ok", "source": "test", "mail_source": "test",
+                    "defenses": "toutes", "model": "demo", "llm": None}
+
+
+def test_health_reports_the_model_name():
+    # modèle injecté : aucun Ollama nécessaire ; le nom annoncé est celui de la configuration
+    settings = Settings(source="test", defenses="toutes", demo=False, llm_spec="ollama:modele-test",
+                        audit_path=None, allowed_hosts=HOSTS)
+    with TestClient(create_app(settings, llm_factory=lambda spec: NaiveVictimLLM())) as client:
+        body = client.get("/api/health").json()
+    assert body["model"] == "llm"
+    assert body["llm"] == "ollama:modele-test"
 
 
 def test_chat_streams_the_agent_steps():
