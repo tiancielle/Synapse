@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, tzinfo
 
 LIMITE_DEFAUT = 5
 LIMITE_MAX = 50
+ANNEE_MIN = 2000      # aucun mail utile avant ; évite aussi les dates d'avant 1970 (OSError sous Windows)
+ANNEE_MAX = 2100
 
 _FORMAT_JOUR = "%Y-%m-%d"
 # (format, durée ajoutée pour obtenir la borne EXCLUE d'un « jusqu'à » inclusif)
@@ -45,21 +47,32 @@ def _tous_les_mots(texte: str, recherche: str) -> bool:
     return all(mot in cible for mot in _plier(recherche).split())
 
 
+def _verifier_annee(dt: datetime, valeur: str, nom: str) -> datetime:
+    """Années bornées : hors plage, timestamp() lève OSError sous Windows (avant 1970) ou OverflowError (an 9999),
+    que le serveur ne transforme pas en message lisible."""
+    if not ANNEE_MIN <= dt.year <= ANNEE_MAX:
+        raise ValueError(f"Date hors plage pour « {nom} » : {valeur!r}. Années acceptées : {ANNEE_MIN} à {ANNEE_MAX}.")
+    return dt
+
+
 def _lire_borne(valeur: str, nom: str, *, fin: bool) -> datetime | None:
     v = (valeur or "").strip()
     if not v:
         return None
-    try:
-        if len(v) == 10:
+    if len(v) == 10:
+        try:
             jour = datetime.strptime(v, _FORMAT_JOUR)
+        except ValueError:
+            jour = None
+        if jour is not None:
+            _verifier_annee(jour, valeur, nom)
             return jour + timedelta(days=1) if fin else jour      # « jusqu'à » une date = toute la journée
-    except ValueError:
-        pass
     for fmt, pas in _FORMATS_HEURE:
         try:
             dt = datetime.strptime(v, fmt)
         except ValueError:
             continue
+        _verifier_annee(dt, valeur, nom)
         return dt + pas if fin else dt
     raise ValueError(
         f"Date invalide pour « {nom} » : {valeur!r}. "

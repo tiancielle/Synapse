@@ -65,9 +65,14 @@ class FixtureMailBackend:
         if not sujet.strip():
             raise ValueError("Le sujet ne peut pas être vide")
 
-    def search(self, query: str = "", account: str = "", limit: int = LIMITE_DEFAUT, *, expediteur: str = "",
-               sujet: str = "", depuis: str = "", jusqu_a: str = "", non_lus: bool = False) -> list[dict]:
-        """Mails les plus récents d'abord, filtrés. Sans filtre : les plus récents (du compte si précisé)."""
+    def search(self, *args, **kwargs) -> list[dict]:
+        return self.search_page(*args, **kwargs)[0]
+
+    def search_page(self, query: str = "", account: str = "", limit: int = LIMITE_DEFAUT, *, expediteur: str = "",
+                    sujet: str = "", depuis: str = "", jusqu_a: str = "",
+                    non_lus: bool = False) -> tuple[list[dict], bool]:
+        """Mails les plus récents d'abord, filtrés. Sans filtre : les plus récents (du compte si précisé).
+        Renvoie (mails, il_en_reste) : il_en_reste = d'autres mails correspondent au-delà de la limite."""
         self._check_account(account, required=False)
         f = construire_filtres(requete=query, expediteur=expediteur, sujet=sujet, depuis=depuis,
                                jusqu_a=jusqu_a, non_lus=non_lus, limite=limit)
@@ -76,8 +81,9 @@ class FixtureMailBackend:
                 and correspond(f, de=m["de"], sujet=m["sujet"], texte=m["corps"],
                                date=lire_date_fixture(m["date"]), lu=m["lu"])]
         hits.sort(key=lambda m: m["date"], reverse=True)
-        return [{"id": m["id"], "compte": m["compte"], "de": m["de"], "sujet": m["sujet"],
-                 "date": m["date"], "lu": m["lu"], "apercu": _apercu(m["corps"])} for m in hits[:f.limite]]
+        mails = [{"id": m["id"], "compte": m["compte"], "de": m["de"], "sujet": m["sujet"],
+                  "date": m["date"], "lu": m["lu"], "apercu": _apercu(m["corps"])} for m in hits[:f.limite]]
+        return mails, len(hits) > f.limite
 
     def read(self, mail_id: str) -> dict:
         for m in self.mails:
@@ -291,10 +297,16 @@ class GmailMailBackend:
             kwargs["metadataHeaders"] = metadata_headers
         return self._execute(self.service.users().messages().get(**kwargs), mail_id=mail_id)
 
-    def search(self, query: str = "", account: str = "", limit: int = LIMITE_DEFAUT, *, expediteur: str = "",
-               sujet: str = "", depuis: str = "", jusqu_a: str = "", non_lus: bool = False) -> list[dict]:
+    def search(self, *args, **kwargs) -> list[dict]:
+        return self.search_page(*args, **kwargs)[0]
+
+    def search_page(self, query: str = "", account: str = "", limit: int = LIMITE_DEFAUT, *, expediteur: str = "",
+                    sujet: str = "", depuis: str = "", jusqu_a: str = "",
+                    non_lus: bool = False) -> tuple[list[dict], bool]:
         """Recherche Gmail avec les mêmes filtres que le backend de test. Les filtres sont envoyés à Gmail
-        (from:, subject:, after:, before:, is:unread) PUIS revérifiés ici sur la date exacte de réception."""
+        (from:, subject:, after:, before:, is:unread) PUIS revérifiés ici sur la date exacte de réception.
+        Renvoie (mails, il_en_reste). il_en_reste se lit sur la réponse BRUTE de Gmail (page pleine ou page
+        suivante) : un mail écarté par le filtre exact ne doit pas faire croire que tout a été vu."""
         self._check_account(account)
         f = construire_filtres(requete=query, expediteur=expediteur, sujet=sujet, depuis=depuis,
                                jusqu_a=jusqu_a, non_lus=non_lus, limite=limit)
@@ -303,8 +315,10 @@ class GmailMailBackend:
         if q:
             kwargs["q"] = q
         listed = self._execute(self.service.users().messages().list(**kwargs))
+        bruts = listed.get("messages") or []
+        il_en_reste = bool(listed.get("nextPageToken")) or len(bruts) >= f.limite
         out = []
-        for stub in listed.get("messages") or []:
+        for stub in bruts:
             mid = stub["id"]
             # metadata seulement : pas de corps (le corps est lu uniquement par read)
             msg = self._get_message(
@@ -326,7 +340,7 @@ class GmailMailBackend:
                 "lu": lu,
                 "apercu": _apercu(apercu),
             })
-        return out
+        return out, il_en_reste
 
     def read(self, mail_id: str) -> dict:
         msg = self._get_message(mail_id, format="full")

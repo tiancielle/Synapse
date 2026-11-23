@@ -34,6 +34,14 @@ def test_invalid_dates_give_a_clear_message_naming_the_field(champ, valeur):
         construire_filtres(**{champ: valeur})
 
 
+@pytest.mark.parametrize("champ,valeur", [("depuis", "1960-01-01"), ("jusqu_a", "9999-12-31"),
+                                          ("depuis", "1969-12-31T23:59"), ("jusqu_a", "2101-01-01T00:00")])
+def test_out_of_range_years_give_a_clear_message_instead_of_a_crash(champ, valeur):
+    # sans borne : OSError (Windows, avant 1970) ou OverflowError (an 9999), réduites à « Error executing tool »
+    with pytest.raises(ValueError, match=f"hors plage pour « {champ} ».*2000 à 2100"):
+        construire_filtres(**{champ: valeur})
+
+
 def test_inverted_range_is_rejected():
     with pytest.raises(ValueError, match="antérieur"):
         construire_filtres(depuis="2026-11-23", jusqu_a="2026-11-22")
@@ -49,7 +57,7 @@ def test_limit_default_and_bounds():
 
 # --- correspondance -------------------------------------------------------------------------
 
-MAIL = dict(de="Hamza Fadil <hamza@exemple.test>", sujet="Offre ingénieur IA", texte="Poste à Rabat",
+MAIL = dict(de="Nour Testeur <nour@exemple.test>", sujet="Offre ingénieur IA", texte="Poste à Rabat",
             date=datetime(2026, 11, 22, 10, 15), lu=False)
 
 
@@ -62,8 +70,8 @@ def test_no_filter_matches_everything():
 
 
 def test_sender_matches_name_or_address_without_case_or_accents():
-    assert ok(expediteur="hamza") and ok(expediteur="FADIL") and ok(expediteur="exemple.test")
-    assert ok(expediteur="fadil hamza")                         # ordre des mots indifférent
+    assert ok(expediteur="nour") and ok(expediteur="TESTEUR") and ok(expediteur="exemple.test")
+    assert ok(expediteur="testeur nour")                       # ordre des mots indifférent
     assert not ok(expediteur="sara")
 
 
@@ -92,8 +100,8 @@ def test_unread_only():
 
 
 def test_filters_combine_with_and():
-    assert ok(expediteur="hamza", sujet="offre", depuis="2026-11-22", non_lus=True)
-    assert not ok(expediteur="hamza", sujet="offre", depuis="2026-11-23")
+    assert ok(expediteur="nour", sujet="offre", depuis="2026-11-22", non_lus=True)
+    assert not ok(expediteur="nour", sujet="offre", depuis="2026-11-23")
 
 
 def test_requete_check_can_be_skipped_when_the_server_already_applied_it():
@@ -114,11 +122,11 @@ def test_fixture_dates_and_gmail_internal_dates_become_local_naive_datetimes():
 # --- requête Gmail ---------------------------------------------------------------------------
 
 def test_gmail_query_translates_every_filter():
-    f = construire_filtres(requete="stage", expediteur="Hamza Fadil", sujet="offre", depuis="2026-11-22",
+    f = construire_filtres(requete="stage", expediteur="Nour Testeur", sujet="offre", depuis="2026-11-22",
                            jusqu_a="2026-11-22", non_lus=True)
     q = requete_gmail(f, UTC)
     debut = int(datetime(2026, 11, 22, tzinfo=UTC).timestamp())
-    assert q == f"stage from:(Hamza Fadil) subject:(offre) after:{debut - 60} before:{debut + 86400 + 60} is:unread"
+    assert q == f"stage from:(Nour Testeur) subject:(offre) after:{debut - 60} before:{debut + 86400 + 60} is:unread"
 
 
 def test_gmail_query_is_empty_without_filters_and_never_lets_the_model_inject_operators():

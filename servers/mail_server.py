@@ -73,11 +73,12 @@ def _ou_erreur_lisible(appel):
 )
 def chercher_mails(requete: str = "", compte: str = "", expediteur: str = "", sujet: str = "",
                    depuis: str = "", jusqu_a: str = "", non_lus: bool = False, limite: int = LIMITE_DEFAUT) -> dict:
-    mails = _ou_erreur_lisible(lambda: backend.search(
+    mails, il_en_reste = _ou_erreur_lisible(lambda: backend.search_page(
         requete, compte, limite, expediteur=expediteur, sujet=sujet, depuis=depuis, jusqu_a=jusqu_a,
         non_lus=non_lus))
     # limite_atteinte : il peut y avoir d'autres mails que ceux listés (utile pour répondre honnêtement)
-    return {"mails": mails, "limite_atteinte": len(mails) >= max(1, min(int(limite), LIMITE_MAX))}
+    return {"mails": mails,
+            "limite_atteinte": il_en_reste or len(mails) >= max(1, min(int(limite), LIMITE_MAX))}
 
 
 @mcp.tool(
