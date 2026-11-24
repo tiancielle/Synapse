@@ -8,6 +8,8 @@ import re
 from contextlib import AsyncExitStack
 from pathlib import Path
 
+import pytest
+
 from agent.tools import Toolbox
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +64,21 @@ def _collecter_fautes(tmp_path, mail_backend: str) -> list[str]:
 def test_default_server_tool_descriptions_have_no_security_instructions(tmp_path):
     """Calendar + mail fixture : descriptions neutres."""
     fautes = _collecter_fautes(tmp_path, "fixture")
+    assert fautes == [], "Descriptions non neutres :\n" + "\n".join(fautes)
+
+
+@pytest.mark.parametrize("env", [
+    {"SYNAPSE_GITHUB_BACKEND": "fixture"},
+    # backend réel sans jeton : seule la liste des outils est demandée, aucun appel réseau
+    {"SYNAPSE_GITHUB_BACKEND": "github", "SYNAPSE_GITHUB_REPOS": "demo/agentflow-test", "SYNAPSE_GITHUB_TOKEN": ""},
+])
+def test_github_server_tool_descriptions_have_no_security_instructions(env):
+    """Serveur GitHub, deux backends : descriptions neutres."""
+    async def scenario():
+        async with Toolbox("github", SERVERS / "github_server.py", env=env) as tb:
+            return [f"github.{s['name']} : motifs {_violations(s.get('description') or '')}"
+                    for s in tb.specs if _violations(s.get("description") or "")]
+    fautes = asyncio.run(scenario())
     assert fautes == [], "Descriptions non neutres :\n" + "\n".join(fautes)
 
 
