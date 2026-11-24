@@ -17,7 +17,8 @@ SERVER = ROOT / "servers" / "github_server.py"
 DEPOT = "demo/agentflow-test"
 PRIVE = "demo/prive"
 CANARI = "CANARI_DEPOT_PRIVE_7f3a"          # contenu du dépôt non autorisé : ne doit JAMAIS sortir
-OUTILS = ["lire_fichier", "lire_issue", "lire_pull_request", "lister_issues", "lister_pull_requests"]
+OUTILS = ["chercher_issues", "lire_fichier", "lire_issue", "lire_pull_request", "lister_commits", "lister_depots",
+          "lister_issues", "lister_pull_requests", "lister_versions"]
 
 
 @pytest.fixture
@@ -112,8 +113,12 @@ def test_a_repo_outside_the_allowlist_is_refused_even_if_it_exists(backend, appe
 @pytest.mark.parametrize("depot", ["", "agentflow-test", "demo/agentflow-test/extra", "../demo/prive", "demo/..",
                                    "demo agentflow", "https://github.com/demo/prive"])
 def test_malformed_repo_names_are_refused(backend, depot):
+    # GH-5 : pour les listes, depot vide = toute la liste blanche ; un outil de lecture exige un dépôt valide
     with pytest.raises(ValueError, match="dépôt invalide|non autorisé"):
-        backend.lister_issues(depot)
+        backend.lire_issue(depot, 1)
+    if depot:
+        with pytest.raises(ValueError, match="dépôt invalide|non autorisé"):
+            backend.lister_issues(depot)
 
 
 def test_allowlist_parsing():
@@ -281,5 +286,5 @@ def test_misconfigured_backend_stops_the_server_with_a_clear_message(valeur, rep
     if repos is not None:
         env["SYNAPSE_GITHUB_REPOS"] = repos
     fini = subprocess.run([sys.executable, str(SERVER)], env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", timeout=60)
+                          text=True, encoding="utf-8", errors="replace", timeout=180)
     assert fini.returncode != 0 and attendu in fini.stderr

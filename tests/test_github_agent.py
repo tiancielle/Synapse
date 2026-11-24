@@ -81,8 +81,9 @@ def test_real_github_backend_starts_consistently_without_token_nor_network():
             return rt.problems, sorted(s["name"] for s in rt.toolbox.specs if s["name"].startswith("github__"))
     problems, noms = asyncio.run(scenario())
     assert problems == []
-    assert noms == ["github__lire_fichier", "github__lire_issue", "github__lire_pull_request",
-                    "github__lister_issues", "github__lister_pull_requests"]
+    assert noms == ["github__chercher_issues", "github__lire_fichier", "github__lire_issue",
+                    "github__lire_pull_request", "github__lister_commits", "github__lister_depots",
+                    "github__lister_issues", "github__lister_pull_requests", "github__lister_versions"]
 
 
 def test_without_defenses_an_issue_comment_reaches_the_send_tool():

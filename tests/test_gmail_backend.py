@@ -181,6 +181,12 @@ def test_search_returns_fixture_shaped_dicts_and_compte_gmail():
     assert service._messages.list_calls[-1]["maxResults"] == 10
 
 
+def test_gmail_operators_in_the_requete_never_reach_gmail():
+    backend, service = make_backend([])
+    backend.search("in:anywhere label:x -spam OR facture", limit=10)
+    assert service._messages.list_calls[-1]["q"] == "in anywhere label x spam facture"
+
+
 def test_empty_query_lists_without_q_and_caps_limit_at_50():
     backend, service = make_backend([_msg("g1", plain="x", snippet="x")])
     backend.search("", limit=200)

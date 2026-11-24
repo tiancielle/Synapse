@@ -7,12 +7,14 @@
     python chat.py --source google      -> VRAI Google Calendar en lecture seule (après python connect_google.py)
     python chat.py --mail-source gmail  -> VRAI Gmail en lecture seule (après python connect_gmail.py)
     python chat.py --github-source github -> VRAI GitHub en lecture seule (liste blanche + secrets/github_token)
+    python chat.py --servers github     -> ne lance que le serveur GitHub (aussi : SYNAPSE_SERVERS)
 
 Commandes dans le chat :  /audit  (journal d'audit)   /quitter
 """
 import argparse
 import asyncio
 import json
+import os
 import sys
 
 from dotenv import load_dotenv
@@ -21,8 +23,8 @@ from langgraph.types import Command
 
 from agent.fakes import NaiveVictimLLM
 from agent.llm import get_llm
-from agent.runtime import (DEFENSE_PRESETS, ROOT, open_runtime, verifier_connexion_github,
-                           verifier_connexion_gmail, verifier_connexion_google)
+from agent.runtime import (DEFENSE_PRESETS, ROOT, SERVEURS_CONNUS, lire_serveurs, open_runtime,
+                           verifier_connexion_github, verifier_connexion_gmail, verifier_connexion_google)
 
 LIBELLES_ISSUE = {"executed": "exécuté", "blocked": "BLOQUÉ", "error": "ÉCHEC"}
 
@@ -99,15 +101,19 @@ def afficher_audit(fw):
 async def main(args):
     load_dotenv(ROOT / ".env")
     try:
-        verifier_connexion_google(args.source)
-        verifier_connexion_gmail(args.mail_source)
-        verifier_connexion_github(args.github_source)
-    except RuntimeError as erreur:
+        actifs = lire_serveurs(args.servers)
+        if "calendar" in actifs:                     # connexions vérifiées seulement pour les serveurs lancés
+            verifier_connexion_google(args.source)
+        if "mail" in actifs:
+            verifier_connexion_gmail(args.mail_source)
+        if "github" in actifs:
+            verifier_connexion_github(args.github_source)
+    except (RuntimeError, ValueError) as erreur:
         print(erreur)
         return
     llm = NaiveVictimLLM() if args.demo else get_llm()
     async with open_runtime(source=args.source, defenses=args.defenses, llm=llm,
-                            mail_source=args.mail_source, github_source=args.github_source, state_prefix="synapse_chat_") as rt:
+                            mail_source=args.mail_source, github_source=args.github_source, actifs=actifs, state_prefix="synapse_chat_") as rt:
         cfg = {"configurable": {"thread_id": "chat"}}
         deja_vus = [0]
         print("=" * 70)
@@ -118,6 +124,7 @@ async def main(args):
             print(f" Date simulée : {rt.jour_ref.isoformat()} | calendrier de test (données fictives)")
         print(f" Mail : {'VRAI Gmail (lecture seule)' if args.mail_source == 'gmail' else 'données de test (fixture)'}")
         print(f" GitHub : {'VRAI GitHub (lecture seule)' if args.github_source == 'github' else 'dépôts de test (fixture)'}")
+        print(f" Serveurs lancés : {', '.join(actifs)}")
         print(" Commandes : /audit  /quitter")
         print("=" * 70)
         while True:
@@ -146,4 +153,6 @@ if __name__ == "__main__":
                         help="test = mails fictifs ; gmail = vrai Gmail (lecture seule)")
     parser.add_argument("--github-source", choices=["test", "github"], default="test",
                         help="test = dépôts fictifs ; github = vrai GitHub (lecture seule)")
+    parser.add_argument("--servers", default=os.getenv("SYNAPSE_SERVERS", ",".join(SERVEURS_CONNUS)),
+                        help="serveurs à lancer, séparés par des virgules (calendar,mail,github ; défaut : tous)")
     asyncio.run(main(parser.parse_args()))

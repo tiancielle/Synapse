@@ -135,7 +135,8 @@ def outils_mail_attendus(backend: str) -> frozenset[str]:
 
 
 # Outils GitHub : MÊMES outils, tous en lecture, pour les deux backends (fixture et github réel).
-GITHUB_TOOLS = frozenset({"lister_issues", "lire_issue", "lister_pull_requests", "lire_pull_request", "lire_fichier"})
+GITHUB_TOOLS = frozenset({"lister_issues", "lire_issue", "lister_pull_requests", "lire_pull_request", "lire_fichier",
+                          "lister_depots", "lister_commits", "lister_versions", "chercher_issues"})   # tous en lecture
 GITHUB_TOOLS_BY_BACKEND: dict[str, frozenset[str]] = {"fixture": GITHUB_TOOLS, "github": GITHUB_TOOLS}
 
 

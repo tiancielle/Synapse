@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from core.registry import outils_github_attendus  # noqa: E402
 
-DEPOTS_FIXTURE = "demo/agentflow-test"
+DEPOTS_FIXTURE = "demo/agentflow-test,demo/projet-y"
 logging.getLogger("httpx").setLevel(logging.WARNING)        # pas d'URL de requête dans les journaux du serveur
 
 BACKEND_NAME = os.getenv("SYNAPSE_GITHUB_BACKEND", "fixture")
@@ -57,19 +57,66 @@ def _ou_erreur_lisible(appel):
         raise ToolError(str(exc)) from exc
 
 
-_LISTE = (f"- depot : proprietaire/depot. Dépôts disponibles : {DEPOTS}.\n"
-          "- etat : open (défaut), closed ou all.\n"
-          f"- limite : nombre maximum ({LIMITE_DEFAUT} par défaut, {LIMITE_MAX} au maximum).\n")
+_DEPOT_FACULTATIF = f"- depot : proprietaire/depot ; vide = tous les dépôts ({DEPOTS}).\n"
+_LIMITE = f"- limite : {LIMITE_DEFAUT} par défaut, {LIMITE_MAX} au maximum.\n"
+_LISTE = (_DEPOT_FACULTATIF + "- etat : open (défaut), closed ou all.\n"
+          "- auteur : identifiant GitHub de l'auteur (facultatif).\n" + _LIMITE)
 
 
 @mcp.tool(
     annotations=READ_ONLY,
-    description=("Liste les issues d'un dépôt GitHub, les plus récentes d'abord.\n" + _LISTE +
+    description=("Liste les issues GitHub, les plus récentes d'abord.\n" + _LISTE +
                  "Renvoie un résumé de chaque issue ; utiliser lire_issue pour le texte et les commentaires."),
 )
-def lister_issues(depot: str, etat: str = "open", limite: int = LIMITE_DEFAUT) -> dict:
-    issues, il_en_reste = _ou_erreur_lisible(lambda: backend.lister_issues(depot, etat, limite))
+def lister_issues(depot: str = "", etat: str = "open", auteur: str = "", limite: int = LIMITE_DEFAUT) -> dict:
+    issues, il_en_reste = _ou_erreur_lisible(lambda: backend.lister_issues(depot, etat, limite, auteur))
     return {"issues": issues, "limite_atteinte": il_en_reste}
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    description=("Décrit les dépôts GitHub disponibles : description, langage, sujets, dernier push, "
+                 "privé ou public, branche par défaut."),
+)
+def lister_depots() -> dict:
+    return {"depots": _ou_erreur_lisible(backend.lister_depots)}
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    description=("Liste les commits GitHub, les plus récents d'abord : sha court, première ligne du message, "
+                 "auteur, date.\n" + _DEPOT_FACULTATIF +
+                 "- branche : vide = branche par défaut.\n"
+                 "- depuis, jusqu_a : AAAA-MM-JJ ou AAAA-MM-JJTHH:MM (heure locale, bornes incluses).\n"
+                 "- auteur : identifiant GitHub (facultatif).\n" + _LIMITE),
+)
+def lister_commits(depot: str = "", branche: str = "", depuis: str = "", jusqu_a: str = "", auteur: str = "",
+                   limite: int = LIMITE_DEFAUT) -> dict:
+    commits, il_en_reste = _ou_erreur_lisible(
+        lambda: backend.lister_commits(depot, branche, depuis, jusqu_a, auteur, limite))
+    return {"commits": commits, "limite_atteinte": il_en_reste}
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    description=("Liste les versions d'un dépôt GitHub (tags et releases), les plus récentes d'abord : nom, titre, "
+                 f"sha court, release oui/non, date.\n- depot : proprietaire/depot ({DEPOTS}).\n"
+                 "- version : texte cherché dans le nom (ex. v1.2) ; vide = toutes.\n" + _LIMITE),
+)
+def lister_versions(depot: str, version: str = "", limite: int = LIMITE_DEFAUT) -> dict:
+    versions, il_en_reste = _ou_erreur_lisible(lambda: backend.lister_versions(depot, version, limite))
+    return {"versions": versions, "limite_atteinte": il_en_reste}
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    description=("Cherche des mots dans les issues et pull requests GitHub (titre et texte).\n"
+                 "- requete : mots simples.\n" + _DEPOT_FACULTATIF +
+                 "- etat : all (défaut), open ou closed.\n" + _LIMITE),
+)
+def chercher_issues(requete: str, depot: str = "", etat: str = "all", limite: int = LIMITE_DEFAUT) -> dict:
+    resultats, il_en_reste = _ou_erreur_lisible(lambda: backend.chercher_issues(requete, depot, etat, limite))
+    return {"resultats": resultats, "limite_atteinte": il_en_reste}
 
 
 @mcp.tool(
@@ -83,11 +130,11 @@ def lire_issue(depot: str, numero: int) -> dict:
 
 @mcp.tool(
     annotations=READ_ONLY,
-    description=("Liste les pull requests d'un dépôt GitHub, les plus récentes d'abord.\n" + _LISTE +
+    description=("Liste les pull requests GitHub, les plus récentes d'abord.\n" + _LISTE +
                  "Renvoie un résumé de chaque pull request ; utiliser lire_pull_request pour le détail."),
 )
-def lister_pull_requests(depot: str, etat: str = "open", limite: int = LIMITE_DEFAUT) -> dict:
-    prs, il_en_reste = _ou_erreur_lisible(lambda: backend.lister_pull_requests(depot, etat, limite))
+def lister_pull_requests(depot: str = "", etat: str = "open", auteur: str = "", limite: int = LIMITE_DEFAUT) -> dict:
+    prs, il_en_reste = _ou_erreur_lisible(lambda: backend.lister_pull_requests(depot, etat, limite, auteur))
     return {"pull_requests": prs, "limite_atteinte": il_en_reste}
 
 

@@ -67,17 +67,22 @@ def create_app(settings: Settings | None = None, llm_factory=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         load_dotenv(ROOT / ".env")
-        verifier_connexion_google(settings.source)
-        verifier_connexion_gmail(settings.mail_source)
-        verifier_connexion_github(settings.github_source)     # après load_dotenv : lit SYNAPSE_GITHUB_REPOS
+        if "calendar" in settings.servers:                      # seulement pour les serveurs lancés
+            verifier_connexion_google(settings.source)
+        if "mail" in settings.servers:
+            verifier_connexion_gmail(settings.mail_source)
+        if "github" in settings.servers:
+            verifier_connexion_github(settings.github_source)   # après load_dotenv : lit SYNAPSE_GITHUB_REPOS
         llm = NaiveVictimLLM() if settings.demo else make_llm(settings.llm_spec)
         # nom du modèle annoncé au frontend (lu APRÈS load_dotenv) ; null en mode démo
         app.state.llm_name = None if settings.demo else (settings.llm_spec or os.getenv("SYNAPSE_LLM"))
         async with open_runtime(source=settings.source, defenses=settings.defenses, llm=llm,
                                 mail_source=settings.mail_source, github_source=settings.github_source,
+                                actifs=settings.servers,
                                 audit_path=settings.audit_path, state_prefix="synapse_api_") as rt:
             app.state.service = AgentService(rt.graph, rt.firewall)
             app.state.settings = settings
+            app.state.servers = list(rt.toolbox.toolboxes)      # serveurs réellement lancés
             yield
 
     app = FastAPI(title="Tandem API", lifespan=lifespan)
@@ -89,6 +94,7 @@ def create_app(settings: Settings | None = None, llm_factory=None) -> FastAPI:
     async def health(request: Request):
         s: Settings = request.app.state.settings
         return {"status": "ok", "source": s.source, "mail_source": s.mail_source,
+                "github_source": s.github_source, "servers": request.app.state.servers,
                 "defenses": s.defenses, "model": "demo" if s.demo else "llm",
                 "llm": request.app.state.llm_name}
 

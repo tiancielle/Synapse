@@ -99,7 +99,7 @@ def test_list_issues_drops_pull_requests_and_maps_fields():
     api = FausseApi({f"{BASE}/issues": (200, page, {})})
     issues, reste = backend(api).lister_issues(DEPOT, etat="all", limite=10)
     assert [i["numero"] for i in issues] == [5, 3] and reste is False
-    assert issues[0] == {"numero": 5, "titre": "Titre", "etat": "open", "auteur": "auteur-test", "etiquettes": ["bug"],
+    assert issues[0] == {"depot": DEPOT, "numero": 5, "titre": "Titre", "etat": "open", "auteur": "auteur-test", "etiquettes": ["bug"],
                          "date": "2026-10-12T10:00", "nb_commentaires": 2}
     assert api.requetes[0].url.params["state"] == "all" and int(api.requetes[0].url.params["per_page"]) <= 100
 

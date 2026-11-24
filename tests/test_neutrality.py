@@ -82,6 +82,19 @@ def test_github_server_tool_descriptions_have_no_security_instructions(env):
     assert fautes == [], "Descriptions non neutres :\n" + "\n".join(fautes)
 
 
+@pytest.mark.parametrize("sources", [("calendar",), ("mail",), ("github",), ("calendar", "mail"),
+                                     ("calendar", "mail", "github")])
+def test_base_prompts_have_no_security_instructions_whatever_the_active_sources(sources):
+    """Prompts de base (plan, act, verify) : neutres pour toute combinaison de sources ; seul GUARD_PROMPT
+    (hardened_prompt) porte des consignes."""
+    from agent.graph import ACT_PROMPT, GUARD_PROMPT, PLAN_PROMPT, VERIFY_PROMPT, decrire_sources
+    acces = decrire_sources(sources)
+    textes = [PLAN_PROMPT.format(acces=acces, outils="- x : y"),
+              ACT_PROMPT.format(acces=acces, today="2026-10-18", plan="p"), VERIFY_PROMPT]
+    assert [_violations(t) for t in textes] == [[], [], []]
+    assert _violations(GUARD_PROMPT)        # témoin : le détecteur de motifs fonctionne
+
+
 def test_gmail_backend_tool_descriptions_have_no_security_instructions(tmp_path):
     """Mail backend gmail (sans jeton : list_tools seulement) : descriptions neutres."""
     fautes = _collecter_fautes(tmp_path, "gmail")

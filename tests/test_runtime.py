@@ -8,9 +8,13 @@ import chat
 from agent.dates import DATE_DEMO
 from agent.fakes import NaiveVictimLLM
 from agent.graph import run_agent
-from agent.runtime import (DEFENSE_PRESETS, environnement_calendrier, environnement_github, github_backend_name,
-                           jour_reference, open_runtime, serveurs_par_defaut, verifier_connexion_github,
-                           verifier_connexion_gmail, verifier_connexion_google)
+from langchain_core.messages import AIMessage
+
+from agent.fakes import ScriptedLLM
+from agent.graph import SOURCES_PAR_DEFAUT, decrire_sources
+from agent.runtime import (DEFENSE_PRESETS, SERVEURS_CONNUS, environnement_calendrier, environnement_github,
+                           github_backend_name, jour_reference, lire_serveurs, open_runtime, serveurs_par_defaut,
+                           verifier_connexion_github, verifier_connexion_gmail, verifier_connexion_google)
 from api.settings import DEFENSE_PRESETS as PRESETS_VUS_PAR_L_API
 from api.settings import Settings
 from google.auth.exceptions import RefreshError
@@ -87,7 +91,7 @@ def test_github_environment_passes_the_allowlist_explicitly_and_never_the_token(
     parent = {"SYNAPSE_GITHUB_REPOS": "mon-compte/mon-depot", "SYNAPSE_GITHUB_TOKEN": "FAUX_JETON_TEST"}
     test_env = environnement_github("test", env=parent)
     vrai_env = environnement_github("github", env=parent)
-    assert test_env == {"SYNAPSE_GITHUB_BACKEND": "fixture", "SYNAPSE_GITHUB_REPOS": "demo/agentflow-test"}
+    assert test_env == {"SYNAPSE_GITHUB_BACKEND": "fixture", "SYNAPSE_GITHUB_REPOS": "demo/agentflow-test,demo/projet-y"}
     assert vrai_env == {"SYNAPSE_GITHUB_BACKEND": "github", "SYNAPSE_GITHUB_REPOS": "mon-compte/mon-depot"}
     assert all("FAUX_JETON_TEST" not in str(e) for e in (test_env, vrai_env))
     assert serveurs_par_defaut("test", "tst_")["github"].env["SYNAPSE_GITHUB_BACKEND"] == "fixture"
@@ -107,6 +111,70 @@ def test_real_github_requires_an_allowlist_and_a_token_file(tmp_path):
     (tmp_path / "secrets").mkdir()
     (tmp_path / "secrets" / "github_token").write_text("faux-jeton-de-test")
     verifier_connexion_github("github", racine=tmp_path, env=repos)
+
+
+def test_server_list_is_parsed_in_canonical_order_and_rejects_empty_or_unknown_names():
+    assert lire_serveurs("calendar,mail,github") == SERVEURS_CONNUS == ("calendar", "mail", "github")
+    assert lire_serveurs(" github , calendar ") == ("calendar", "github")
+    assert lire_serveurs(("github", "github")) == ("github",)
+    for vide in ("", " , ", ()):
+        with pytest.raises(ValueError, match="Liste de serveurs vide"):
+            lire_serveurs(vide)
+    with pytest.raises(ValueError, match="Serveur inconnu : gitlab"):
+        lire_serveurs("github,gitlab")
+    with pytest.raises(ValueError, match="Serveur inconnu"):
+        Settings(servers="hello")
+    with pytest.raises(ValueError, match="Serveur inconnu"):
+        asyncio.run(_ouvrir_puis_fermer(actifs="calendar,hello"))
+
+
+def test_settings_read_the_server_list_from_the_environment(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_SERVERS", "mail,calendar")
+    assert Settings.from_env().servers == ("calendar", "mail")
+    monkeypatch.delenv("SYNAPSE_SERVERS")
+    assert Settings.from_env().servers == SERVEURS_CONNUS
+
+
+class LLMQuiNoteLesPrompts(ScriptedLLM):
+    """Doublure : mémorise le message système reçu à chaque appel (plan, act, verify)."""
+    def __init__(self, script):
+        super().__init__(script)
+        self.systemes = []
+
+    async def ainvoke(self, messages):
+        self.systemes.append(str(messages[0].content))
+        return await super().ainvoke(messages)
+
+
+def _prompts_et_serveurs(actifs):
+    llm = LLMQuiNoteLesPrompts([AIMessage(content="Plan."), AIMessage(content="Rien."), AIMessage(content="OK")])
+
+    async def scenario():
+        async with open_runtime(source="test", defenses="aucune", llm=llm, audit_path=None, actifs=actifs) as rt:
+            await run_agent(rt.graph, "Bonjour", "srv1")
+            return rt.problems, sorted({s["name"].split("__")[0] for s in rt.toolbox.specs})
+    problems, serveurs = asyncio.run(scenario())
+    return llm.systemes, problems, serveurs
+
+
+def test_only_requested_servers_start_and_the_prompts_describe_them():
+    systemes, problems, serveurs = _prompts_et_serveurs("github")
+    assert serveurs == ["github"] and problems == []
+    plan, act = systemes[0], systemes[1]
+    assert "accès à GitHub de l'utilisateur" in plan and "accès à GitHub de l'utilisateur" in act
+    assert "calendrier" not in plan + act and "mail" not in act
+
+
+def test_default_prompts_announce_all_three_sources():
+    systemes, problems, serveurs = _prompts_et_serveurs(SERVEURS_CONNUS)
+    assert serveurs == ["calendar", "github", "mail"] and problems == []
+    assert "accès au calendrier, au mail et à GitHub de l'utilisateur" in systemes[1]
+
+
+def test_source_description_keeps_the_historical_wording_by_default():
+    assert decrire_sources(SOURCES_PAR_DEFAUT) == "au calendrier et au mail"
+    assert decrire_sources(("calendar",)) == "au calendrier"
+    assert decrire_sources(("calendar", "mail", "github")) == "au calendrier, au mail et à GitHub"
 
 
 def test_gmail_refresh_error_requests_reconnection_without_exposing_token(tmp_path, monkeypatch):

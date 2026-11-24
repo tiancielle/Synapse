@@ -29,7 +29,16 @@ def test_health():
     with make_client() as client:
         body = client.get("/api/health").json()
     assert body == {"status": "ok", "source": "test", "mail_source": "test",
+                    "github_source": "test", "servers": ["calendar", "mail", "github"],
                     "defenses": "toutes", "model": "demo", "llm": None}
+
+
+def test_health_lists_only_the_servers_actually_started():
+    settings = Settings(source="test", defenses="toutes", demo=True, audit_path=None, allowed_hosts=HOSTS,
+                        servers=("github",))
+    with TestClient(create_app(settings)) as client:
+        body = client.get("/api/health").json()
+    assert body["servers"] == ["github"] and body["github_source"] == "test"
 
 
 def test_health_reports_the_model_name():

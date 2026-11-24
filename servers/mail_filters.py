@@ -80,13 +80,19 @@ def _lire_borne(valeur: str, nom: str, *, fin: bool) -> datetime | None:
     )
 
 
-def construire_filtres(requete: str = "", expediteur: str = "", sujet: str = "", depuis: str = "",
-                       jusqu_a: str = "", non_lus: bool = False, limite: int = LIMITE_DEFAUT) -> Filtres:
-    """Valide les arguments de l'outil. Les messages d'erreur sont lus par le modèle : clairs et sans contenu de mail."""
+def lire_periode(depuis: str = "", jusqu_a: str = "") -> tuple[datetime | None, datetime | None]:
+    """(borne incluse, borne EXCLUE) en heure locale, ou None. Partagé avec le serveur GitHub (lister_commits)."""
     borne_debut = _lire_borne(depuis, "depuis", fin=False)
     borne_fin = _lire_borne(jusqu_a, "jusqu_a", fin=True)
     if borne_debut and borne_fin and borne_debut >= borne_fin:
         raise ValueError("« depuis » doit être antérieur à « jusqu_a ».")
+    return borne_debut, borne_fin
+
+
+def construire_filtres(requete: str = "", expediteur: str = "", sujet: str = "", depuis: str = "",
+                       jusqu_a: str = "", non_lus: bool = False, limite: int = LIMITE_DEFAUT) -> Filtres:
+    """Valide les arguments de l'outil. Les messages d'erreur sont lus par le modèle : clairs et sans contenu de mail."""
+    borne_debut, borne_fin = lire_periode(depuis, jusqu_a)
     try:
         limite = int(limite)
     except (TypeError, ValueError):
@@ -138,8 +144,9 @@ def _epoch(dt: datetime, tz: tzinfo | None) -> int:
 
 
 def _mots_sans_operateurs(texte: str) -> str:
-    """Garde lettres, chiffres, @ . - _ et retire les mots-opérateurs (OR, AND, NOT) et les « - » de négation :
-    le modèle ne peut pas détourner la requête Gmail via from: / subject:."""
+    """Garde lettres, chiffres, @ . - _ et retire les mots-opérateurs (OR, AND, NOT) et les « - » de négation.
+    Ni « : » ni guillemets ni parenthèses : requete, expediteur et sujet ne peuvent pas ajouter d'opérateur
+    Gmail (in:anywhere, label:, from:...) ni élargir la recherche ; seuls des mots simples sont envoyés."""
     mots = []
     for mot in re.sub(r"[^\w@.\-]", " ", texte or "").split():
         mot = mot.lstrip("-")
@@ -148,12 +155,17 @@ def _mots_sans_operateurs(texte: str) -> str:
     return " ".join(mots)
 
 
+# Noms publics, réutilisés par le serveur GitHub (recherche et filtres) : une seule implémentation.
+mots_sans_operateurs = _mots_sans_operateurs
+tous_les_mots = _tous_les_mots
+
+
 def requete_gmail(f: Filtres, tz: tzinfo | None = None) -> str:
     """Requête Gmail (syntaxe de la boîte de recherche) équivalente aux filtres.
     Les bornes de date ont 60 s de marge : le filtre exact est refait en Python sur internalDate."""
     parts: list[str] = []
-    if f.requete:
-        parts.append(f.requete)
+    if f.requete and _mots_sans_operateurs(f.requete):      # D2 : plus jamais envoyée telle quelle
+        parts.append(_mots_sans_operateurs(f.requete))
     if f.expediteur and _mots_sans_operateurs(f.expediteur):
         parts.append(f"from:({_mots_sans_operateurs(f.expediteur)})")
     if f.sujet and _mots_sans_operateurs(f.sujet):

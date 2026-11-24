@@ -65,7 +65,23 @@ def verifier_connexion_gmail(mail_source: str, racine: Path = ROOT) -> None:
         raise RuntimeError("Pas encore connecté à Gmail. Lance d'abord :  python connect_gmail.py")
 
 
-DEPOTS_GITHUB_TEST = "demo/agentflow-test"     # dépôt synthétique de data/fixtures/github.json
+SERVEURS_CONNUS = ("calendar", "mail", "github")     # ordre canonique (prompts, /api/health)
+
+
+def lire_serveurs(valeur) -> tuple[str, ...]:
+    """« calendar,github » (CLI / SYNAPSE_SERVERS) ou une séquence -> tuple dans l'ordre canonique.
+    Liste vide ou nom inconnu -> ValueError claire."""
+    noms = [n.strip() for n in (valeur.split(",") if isinstance(valeur, str) else valeur)]
+    noms = [n for n in noms if n]
+    if not noms:
+        raise ValueError(f"Liste de serveurs vide. Valeurs acceptées : {', '.join(SERVEURS_CONNUS)}")
+    inconnus = sorted(set(noms) - set(SERVEURS_CONNUS))
+    if inconnus:
+        raise ValueError(f"Serveur inconnu : {', '.join(inconnus)}. Valeurs acceptées : {', '.join(SERVEURS_CONNUS)}")
+    return tuple(n for n in SERVEURS_CONNUS if n in noms)
+
+
+DEPOTS_GITHUB_TEST = "demo/agentflow-test,demo/projet-y"   # dépôts synthétiques de data/fixtures/github.json
 
 
 def github_backend_name(github_source: str) -> str:
@@ -150,17 +166,23 @@ class Runtime:
 
 @asynccontextmanager
 async def open_runtime(*, source: str, defenses: str, llm, mail_source: str = "test",
-                       github_source: str = "test", audit_path: Path | None = AUDIT_PATH,
+                       github_source: str = "test", actifs=SERVEURS_CONNUS, audit_path: Path | None = AUDIT_PATH,
                        state_prefix: str = "synapse_", servers: dict[str, ServerSpec] | None = None):
-    """Démarre les serveurs MCP et construit l'agent. À utiliser avec `async with`."""
-    verifier_connexion_google(source)
-    verifier_connexion_gmail(mail_source)
+    """Démarre les serveurs MCP et construit l'agent. À utiliser avec `async with`.
+    `actifs` : serveurs à lancer parmi SERVEURS_CONNUS (ignoré si `servers` est fourni explicitement)."""
+    actifs = lire_serveurs(actifs)                      # nom inconnu ou liste vide -> ValueError claire
     github_backend_name(github_source)                  # valeur inconnue -> ValueError claire
-    verifier_connexion_github(github_source)
+    if "calendar" in actifs:                            # connexions vérifiées seulement pour les serveurs lancés
+        verifier_connexion_google(source)
+    if "mail" in actifs:
+        verifier_connexion_gmail(mail_source)
+    if "github" in actifs:
+        verifier_connexion_github(github_source)
     jour_ref = jour_reference(source)
     firewall = Firewall(DEFENSE_PRESETS[defenses], audit_path=audit_path)
-    servers = servers or serveurs_par_defaut(source, state_prefix, mail_source=mail_source,
-                                             github_source=github_source)
+    if not servers:
+        defaut = serveurs_par_defaut(source, state_prefix, mail_source=mail_source, github_source=github_source)
+        servers = {nom: defaut[nom] for nom in actifs}
     async with AsyncExitStack() as stack:
         boxes: dict[str, Toolbox] = {}
         for name, spec in servers.items():
@@ -173,5 +195,5 @@ async def open_runtime(*, source: str, defenses: str, llm, mail_source: str = "t
         for p in problems:                                   # signalé, pas bloquant : l'outil fautif est refusé par défaut
             log.warning("Registre : %s", p)
         toolbox = MultiToolbox(boxes)
-        graph = build_graph(toolbox, llm, firewall, reperes_dates(jour_ref))
+        graph = build_graph(toolbox, llm, firewall, reperes_dates(jour_ref), sources=tuple(servers))
         yield Runtime(graph=graph, firewall=firewall, toolbox=toolbox, jour_ref=jour_ref, problems=problems)

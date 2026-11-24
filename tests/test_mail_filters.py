@@ -133,3 +133,12 @@ def test_gmail_query_is_empty_without_filters_and_never_lets_the_model_inject_op
     assert requete_gmail(Filtres(), UTC) == ""
     q = requete_gmail(construire_filtres(expediteur='x) OR in:anywhere (', sujet='"label:secret" -spam'), UTC)
     assert q == "from:(x in anywhere) subject:(label secret spam)"       # ni « : » ni guillemets ni OR ni négation
+
+
+def test_gmail_query_cleans_the_free_text_requete_too():
+    """D2 : requete n'est plus envoyée telle quelle (même nettoyage que expediteur et sujet)."""
+    q = requete_gmail(construire_filtres(requete='facture in:anywhere label:x -spam OR "devis" (AND) NOT'), UTC)
+    assert q == "facture in anywhere label x spam devis"
+    assert requete_gmail(construire_filtres(requete="réunion stage-été nour@exemple.test"), UTC) == \
+        "réunion stage-été nour@exemple.test"                           # mots simples inchangés
+    assert requete_gmail(construire_filtres(requete="OR -"), UTC) == ""  # rien que des opérateurs : rien d'envoyé
