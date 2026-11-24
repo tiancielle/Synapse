@@ -8,9 +8,11 @@ import chat
 from agent.dates import DATE_DEMO
 from agent.fakes import NaiveVictimLLM
 from agent.graph import run_agent
-from agent.runtime import (DEFENSE_PRESETS, environnement_calendrier, jour_reference, open_runtime,
+from agent.runtime import (DEFENSE_PRESETS, environnement_calendrier, environnement_github, github_backend_name,
+                           jour_reference, open_runtime, serveurs_par_defaut, verifier_connexion_github,
                            verifier_connexion_gmail, verifier_connexion_google)
 from api.settings import DEFENSE_PRESETS as PRESETS_VUS_PAR_L_API
+from api.settings import Settings
 from google.auth.exceptions import RefreshError
 
 SWITCHES = ("use_registry", "require_confirmation", "scan_results", "hardened_prompt")
@@ -55,6 +57,56 @@ def test_gmail_source_requires_a_token_in_the_given_directory(tmp_path):
     with pytest.raises(RuntimeError, match="connect_gmail.py"):
         verifier_connexion_gmail("gmail", racine=tmp_path)
     verifier_connexion_gmail("test", racine=tmp_path)
+
+
+def test_github_source_maps_to_the_server_backend_and_rejects_unknown_values():
+    assert github_backend_name("test") == "fixture" and github_backend_name("github") == "github"
+    with pytest.raises(ValueError, match="github_source inconnue"):
+        github_backend_name("gitlab")
+    with pytest.raises(ValueError, match="github_source"):
+        Settings(github_source="gitlab")
+    with pytest.raises(ValueError, match="github_source inconnue"):
+        asyncio.run(_ouvrir_puis_fermer(github_source="gitlab"))
+
+
+async def _ouvrir_puis_fermer(**kwargs):
+    async with open_runtime(source="test", defenses="toutes", llm=NaiveVictimLLM(), audit_path=None, **kwargs):
+        pass
+
+
+def test_settings_read_the_github_source_from_the_environment(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_GITHUB_SOURCE", "github")
+    assert Settings.from_env().github_source == "github"
+    monkeypatch.delenv("SYNAPSE_GITHUB_SOURCE")
+    assert Settings.from_env().github_source == "test"
+
+
+def test_github_environment_passes_the_allowlist_explicitly_and_never_the_token():
+    """Le SDK mcp ne transmet pas os.environ au serveur : la liste blanche doit être passée explicitement.
+    Le jeton, lui, n'est jamais dans l'environnement du serveur (lu dans secrets/github_token)."""
+    parent = {"SYNAPSE_GITHUB_REPOS": "mon-compte/mon-depot", "SYNAPSE_GITHUB_TOKEN": "FAUX_JETON_TEST"}
+    test_env = environnement_github("test", env=parent)
+    vrai_env = environnement_github("github", env=parent)
+    assert test_env == {"SYNAPSE_GITHUB_BACKEND": "fixture", "SYNAPSE_GITHUB_REPOS": "demo/agentflow-test"}
+    assert vrai_env == {"SYNAPSE_GITHUB_BACKEND": "github", "SYNAPSE_GITHUB_REPOS": "mon-compte/mon-depot"}
+    assert all("FAUX_JETON_TEST" not in str(e) for e in (test_env, vrai_env))
+    assert serveurs_par_defaut("test", "tst_")["github"].env["SYNAPSE_GITHUB_BACKEND"] == "fixture"
+
+
+def test_real_github_requires_an_allowlist_and_a_token_file(tmp_path):
+    verifier_connexion_github("test", racine=tmp_path, env={})               # données de test : rien d'exigé
+    with pytest.raises(RuntimeError, match="SYNAPSE_GITHUB_REPOS"):
+        verifier_connexion_github("github", racine=tmp_path, env={})
+    with pytest.raises(RuntimeError, match="SYNAPSE_GITHUB_REPOS"):
+        verifier_connexion_github("github", racine=tmp_path, env={"SYNAPSE_GITHUB_REPOS": "  "})
+    repos = {"SYNAPSE_GITHUB_REPOS": "mon-compte/mon-depot"}
+    with pytest.raises(RuntimeError, match="secrets/github_token"):
+        verifier_connexion_github("github", racine=tmp_path, env=repos)
+    with pytest.raises(RuntimeError, match="secrets/github_token"):     # un jeton en variable ne suffit pas
+        verifier_connexion_github("github", racine=tmp_path, env={**repos, "SYNAPSE_GITHUB_TOKEN": "x"})
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "github_token").write_text("faux-jeton-de-test")
+    verifier_connexion_github("github", racine=tmp_path, env=repos)
 
 
 def test_gmail_refresh_error_requests_reconnection_without_exposing_token(tmp_path, monkeypatch):

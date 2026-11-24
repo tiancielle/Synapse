@@ -21,7 +21,8 @@ from pydantic import BaseModel, Field
 
 from agent.fakes import NaiveVictimLLM
 from agent.llm import get_llm
-from agent.runtime import open_runtime, verifier_connexion_gmail, verifier_connexion_google
+from agent.runtime import (open_runtime, verifier_connexion_github, verifier_connexion_gmail,
+                           verifier_connexion_google)
 from api.service import AgentService
 from api.settings import ROOT, Settings
 
@@ -68,11 +69,12 @@ def create_app(settings: Settings | None = None, llm_factory=None) -> FastAPI:
         load_dotenv(ROOT / ".env")
         verifier_connexion_google(settings.source)
         verifier_connexion_gmail(settings.mail_source)
+        verifier_connexion_github(settings.github_source)     # après load_dotenv : lit SYNAPSE_GITHUB_REPOS
         llm = NaiveVictimLLM() if settings.demo else make_llm(settings.llm_spec)
         # nom du modèle annoncé au frontend (lu APRÈS load_dotenv) ; null en mode démo
         app.state.llm_name = None if settings.demo else (settings.llm_spec or os.getenv("SYNAPSE_LLM"))
         async with open_runtime(source=settings.source, defenses=settings.defenses, llm=llm,
-                                mail_source=settings.mail_source,
+                                mail_source=settings.mail_source, github_source=settings.github_source,
                                 audit_path=settings.audit_path, state_prefix="synapse_api_") as rt:
             app.state.service = AgentService(rt.graph, rt.firewall)
             app.state.settings = settings

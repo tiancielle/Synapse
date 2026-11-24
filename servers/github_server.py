@@ -6,6 +6,8 @@ Backend choisi par SYNAPSE_GITHUB_BACKEND :
 Liste blanche des dépôts : SYNAPSE_GITHUB_REPOS (« proprietaire/depot,... »).
   fixture : demo/agentflow-test par défaut ; github : OBLIGATOIRE (sinon le serveur refuse de démarrer).
 Jeton (backend github) : SYNAPSE_GITHUB_TOKEN ou secrets/github_token, lu au premier appel d'outil.
+  Lancé par l'agent (chat.py, run_api.py) : SEUL le fichier secrets/github_token est utilisé, car le SDK mcp
+  ne transmet pas os.environ au serveur et le runtime ne lui passe jamais le jeton.
 Aucun outil d'écriture, dans aucun backend.
 """
 import logging

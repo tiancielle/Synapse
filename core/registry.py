@@ -134,6 +134,21 @@ def outils_mail_attendus(backend: str) -> frozenset[str]:
         ) from exc
 
 
+# Outils GitHub : MÊMES outils, tous en lecture, pour les deux backends (fixture et github réel).
+GITHUB_TOOLS = frozenset({"lister_issues", "lire_issue", "lister_pull_requests", "lire_pull_request", "lire_fichier"})
+GITHUB_TOOLS_BY_BACKEND: dict[str, frozenset[str]] = {"fixture": GITHUB_TOOLS, "github": GITHUB_TOOLS}
+
+
+def outils_github_attendus(backend: str) -> frozenset[str]:
+    """Noms d'outils que le serveur github DOIT exposer pour ce backend."""
+    try:
+        return GITHUB_TOOLS_BY_BACKEND[backend]
+    except KeyError as exc:
+        raise ValueError(
+            f"Backend github inconnu : {backend}. Valeurs acceptées : {', '.join(sorted(GITHUB_TOOLS_BY_BACKEND))}"
+        ) from exc
+
+
 # --- Politique du serveur calendrier -----------------------------------------
 register("calendar", "lister_evenements", Risk.READ, "calendar:read")
 register("calendar", "chercher_evenements", Risk.READ, "calendar:read")
@@ -148,3 +163,7 @@ register("mail", "lire_mail", Risk.READ, "mail:read")
 register("mail", "creer_brouillon", Risk.SOFT_WRITE, "mail:draft", reversible=True)
 register("mail", "envoyer_mail", Risk.SENSITIVE, "mail:send", reversible=False,
          note="Envoi irréversible : confirmation obligatoire")
+
+# --- Politique du serveur GitHub (lecture seule) -------------------------------------
+for _outil in sorted(GITHUB_TOOLS):
+    register("github", _outil, Risk.READ, "github:read")

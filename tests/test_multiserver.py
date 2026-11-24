@@ -99,7 +99,7 @@ def test_default_runtime_has_a_coherent_registry():
             return rt.problems, [s["name"] for s in rt.toolbox.specs]
     problems, noms = run(scenario())
     assert problems == []
-    assert {nom.split("__")[0] for nom in noms} == {"calendar", "mail"}
+    assert {nom.split("__")[0] for nom in noms} == {"calendar", "mail", "github"}
 
 
 def test_runtime_can_start_several_servers():
@@ -110,7 +110,7 @@ def test_runtime_can_start_several_servers():
                                 servers=servers) as rt:
             return rt.problems, sorted({s["name"].split("__")[0] for s in rt.toolbox.specs})
     problems, serveurs = run(scenario())
-    assert serveurs == ["calendar", "hello", "mail"]
+    assert serveurs == ["calendar", "github", "hello", "mail"]
     assert any("hello.donner_heure" in p for p in problems)     # exposé mais non enregistré : signalé au démarrage
 
 

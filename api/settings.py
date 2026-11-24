@@ -12,6 +12,7 @@ from agent.runtime import DEFENSE_PRESETS, ROOT   # noqa: F401 (réexportés : r
 class Settings:
     source: str = "test"                 # test = données fictives | google = vrai Google Calendar (lecture seule)
     mail_source: str = "test"            # test = fixture mail | gmail = vrai Gmail (lecture seule)
+    github_source: str = "test"          # test = dépôts synthétiques | github = vrai GitHub (lecture seule)
     defenses: str = "toutes"             # toutes | aucune | registre
     demo: bool = False                   # True = modèle simulé, sans Ollama
     llm_spec: str | None = None          # sinon variable SYNAPSE_LLM
@@ -24,6 +25,8 @@ class Settings:
             raise ValueError(f"source inconnue : {self.source}")
         if self.mail_source not in ("test", "gmail"):
             raise ValueError(f"mail_source inconnue : {self.mail_source}")
+        if self.github_source not in ("test", "github"):
+            raise ValueError(f"github_source inconnue : {self.github_source}")
         if self.defenses not in DEFENSE_PRESETS:
             raise ValueError(f"défenses inconnues : {self.defenses}")
 
@@ -31,5 +34,6 @@ class Settings:
     def from_env(cls) -> "Settings":
         return cls(source=os.getenv("SYNAPSE_SOURCE", "test"),
                    mail_source=os.getenv("SYNAPSE_MAIL_SOURCE", "test"),
+                   github_source=os.getenv("SYNAPSE_GITHUB_SOURCE", "test"),
                    defenses=os.getenv("SYNAPSE_DEFENSES", "toutes"),
                    demo=os.getenv("SYNAPSE_DEMO", "0") == "1")
