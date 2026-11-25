@@ -1,4 +1,5 @@
-import type { AgentMessage, ChatMessage, Conversation, ConfirmationEvent } from "./types";
+import { toPending } from "./parse";
+import type { AgentMessage, ChatMessage, Conversation } from "./types";
 import { truncate } from "./text";
 
 /**
@@ -60,7 +61,7 @@ function sanitizeConversation(raw: unknown): Conversation | null {
   if (!isObject(raw) || typeof raw.id !== "string" || typeof raw.sessionId !== "string") return null;
   if (!SESSION_RE.test(raw.sessionId) || !Array.isArray(raw.messages)) return null;
   const messages = raw.messages.map(sanitizeMessage).filter((m): m is ChatMessage => m !== null);
-  const pending = isObject(raw.pending) && raw.pending.type === "confirmation_required" ? (raw.pending as ConfirmationEvent) : null;
+  const pending = toPending(raw.pending);
   const hasWaiting = messages.some((m) => m.role === "agent" && m.status === "waiting");
   return {
     id: raw.id,

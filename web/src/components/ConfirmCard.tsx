@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 
 import { IconShield } from "@/components/Icons";
 import { truncate } from "@/lib/text";
@@ -10,17 +10,19 @@ type Props = {
   request: ConfirmationEvent;
   busy: boolean;
   onDecision: (approved: boolean) => void;
+  autoFocus?: boolean; // une seule carte prend le focus (sur « Refuser ») quand plusieurs sont affichées
 };
 
 /** Carte affichée dans la conversation quand le pare-feu demande l'accord de l'utilisateur. */
-export default function ConfirmCard({ request, busy, onDecision }: Props) {
+export default function ConfirmCard({ request, busy, onDecision, autoFocus = true }: Props) {
   const refuse = useRef<HTMLButtonElement>(null);
+  const uid = useId(); // plusieurs cartes possibles sur la page des approbations
 
   // Le focus va sur « Refuser » : un appui accidentel sur Entrée ne peut pas autoriser une action sensible.
   // (les boutons sont désactivés tant que le flux n'est pas terminé, d'où la dépendance à `busy`)
   useEffect(() => {
-    if (!busy) refuse.current?.focus();
-  }, [busy]);
+    if (!busy && autoFocus) refuse.current?.focus();
+  }, [busy, autoFocus]);
 
   // args et reason viennent du modèle : affichés en texte brut, jamais interprétés.
   let args = "";
@@ -31,14 +33,14 @@ export default function ConfirmCard({ request, busy, onDecision }: Props) {
   }
 
   return (
-    <section className="confirm" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
+    <section className="confirm" role="alertdialog" aria-labelledby={`${uid}-t`} aria-describedby={`${uid}-d`}>
       <div className="confirm-head">
         <span className="confirm-icon">
           <IconShield size={20} />
         </span>
         <div>
-          <h2 id="confirm-title">Confirmation requise</h2>
-          <p id="confirm-desc">
+          <h2 id={`${uid}-t`}>Confirmation requise</h2>
+          <p id={`${uid}-d`}>
             L&apos;agent souhaite exécuter l&apos;outil <code>{truncate(request.tool, 80)}</code>
           </p>
         </div>

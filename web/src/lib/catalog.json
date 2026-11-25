@@ -1,0 +1,48 @@
+{
+  "_note": "Copie d'affichage de core/registry.py. Vérifiée par tests/test_web_catalog.py : ne jamais ajouter un outil ici sans l'ajouter au registre.",
+  "servers": {
+    "calendar": {
+      "label": "Calendrier",
+      "description": "Agenda : événements, recherche et créneaux libres.",
+      "sources": { "test": "Données de test", "real": "Google Calendar" },
+      "realNote": "Google Calendar en lecture seule : la création et la suppression sont refusées par le serveur.",
+      "tools": [
+        { "name": "lister_evenements", "label": "Lister les événements", "risk": "read", "scope": "calendar:read", "real": true },
+        { "name": "chercher_evenements", "label": "Chercher des événements", "risk": "read", "scope": "calendar:read", "real": true },
+        { "name": "trouver_creneaux_libres", "label": "Trouver des créneaux libres", "risk": "read", "scope": "calendar:read", "real": true },
+        { "name": "creer_evenement", "label": "Créer un événement", "risk": "soft_write", "scope": "calendar:write", "real": false },
+        { "name": "supprimer_evenement", "label": "Supprimer un événement", "risk": "sensitive", "scope": "calendar:write", "real": false }
+      ]
+    },
+    "mail": {
+      "label": "Mail",
+      "description": "Messagerie : recherche, lecture, brouillons et envoi (données de test).",
+      "sources": { "test": "Données de test", "real": "Gmail" },
+      "realNote": "Gmail en lecture seule : seuls la recherche et la lecture sont exposées.",
+      "tools": [
+        { "name": "chercher_mails", "label": "Chercher des mails", "risk": "read", "scope": "mail:read", "real": true },
+        { "name": "lire_mail", "label": "Lire un mail", "risk": "read", "scope": "mail:read", "real": true },
+        { "name": "creer_brouillon", "label": "Créer un brouillon", "risk": "soft_write", "scope": "mail:draft", "real": false },
+        { "name": "envoyer_mail", "label": "Envoyer un mail", "risk": "sensitive", "scope": "mail:send", "real": false }
+      ]
+    },
+    "github": {
+      "label": "GitHub",
+      "description": "Dépôts, issues, pull requests, commits, versions, fichiers ; recherche de projets publics.",
+      "sources": { "test": "Données de test", "real": "GitHub" },
+      "realNote": "GitHub en lecture seule (requêtes GET). Vos dépôts : lecture complète ; dépôts des autres : fiches de recherche seulement.",
+      "tools": [
+        { "name": "lister_depots", "label": "Lister les dépôts", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "lister_issues", "label": "Lister les issues", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "lire_issue", "label": "Lire une issue", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "lister_pull_requests", "label": "Lister les pull requests", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "lire_pull_request", "label": "Lire une pull request", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "lister_commits", "label": "Lister les commits", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "lister_versions", "label": "Lister les versions", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "chercher_issues", "label": "Chercher dans les issues", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "chercher_projets", "label": "Chercher des projets publics", "risk": "read", "scope": "github:read", "real": true },
+        { "name": "lire_fichier", "label": "Lire un fichier", "risk": "read", "scope": "github:read", "real": true }
+      ]
+    }
+  }
+}

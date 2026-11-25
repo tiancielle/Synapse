@@ -1,4 +1,4 @@
-// Types partagés : événements de l'API (contrat v1.4) et données stockées dans le navigateur.
+// Types partagés : événements de l'API (contrat v1.6) et données stockées dans le navigateur.
 
 export const APP_NAME = "AgentFlow";
 
@@ -25,12 +25,29 @@ export type AgentEvent =
 
 export type ConfirmationEvent = Extract<AgentEvent, { type: "confirmation_required" }>;
 
+export type ServerName = "calendar" | "mail" | "github";
+
 export type Health = {
   status: string;
   source: "test" | "google";
-  defenses: "toutes" | "aucune" | "registre";
+  defenses: "toutes" | "aucune" | "registre" | "inconnu"; // « inconnu » : valeur absente ou non reconnue (jamais supposée)
   model: "demo" | "llm";
   llm: string | null; // nom du modèle, affiché dans l'en-tête (null si le backend ne l'envoie pas)
+  mail_source: "test" | "gmail"; // v1.5
+  github_source: "test" | "github"; // v1.6
+  servers: ServerName[]; // v1.6 : serveurs MCP réellement lancés (c'est la référence, pas les sources)
+};
+
+/** Entrée du journal d'audit (GET /api/audit) : jamais le résultat d'un outil, seulement l'appel et la décision. */
+export type AuditEntry = {
+  ts: number; // secondes (epoch)
+  server: string;
+  tool: string;
+  args: Record<string, unknown>;
+  decision: Decision;
+  outcome: ToolOutcome;
+  reason: string;
+  findings: string[];
 };
 
 // ───────── Données stockées (localStorage) ─────────

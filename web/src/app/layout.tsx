@@ -4,11 +4,13 @@ import "@fontsource-variable/newsreader";
 import "@fontsource-variable/jetbrains-mono";
 import "./globals.css";
 
+import AppShell from "@/components/AppShell";
+import { THEME_SCRIPT } from "@/lib/theme";
 import { APP_NAME } from "@/lib/types";
 
 export const metadata: Metadata = {
-  title: APP_NAME,
-  description: "Assistant IA agentique multi-outils (MCP), protégé par un pare-feu et une validation humaine",
+  title: { default: APP_NAME, template: `%s · ${APP_NAME}` },
+  description: "Espace de travail agentique multi-outils (MCP), sous le contrôle d'un pare-feu et d'une validation humaine",
 };
 
 export const viewport: Viewport = {
@@ -17,10 +19,29 @@ export const viewport: Viewport = {
   colorScheme: "light dark",
 };
 
+/** Script de thème : exécuté pendant l'analyse du HTML (avant le premier affichage), ignoré lors des navigations. */
+function ThemeScript() {
+  return (
+    <script
+      type={typeof window === "undefined" ? "text/javascript" : "text/plain"}
+      suppressHydrationWarning
+      dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }}
+    />
+  );
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="fr">
-      <body>{children}</body>
+    <html lang="fr" suppressHydrationWarning>
+      <head>
+        <ThemeScript />
+      </head>
+      <body>
+        <a className="skip" href="#contenu">
+          Aller au contenu
+        </a>
+        <AppShell>{children}</AppShell>
+      </body>
     </html>
   );
 }

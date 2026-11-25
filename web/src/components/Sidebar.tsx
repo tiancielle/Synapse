@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 
-import { IconPlus, IconTrash, LogoMark } from "@/components/Icons";
-import { APP_NAME, type Conversation } from "@/lib/types";
+import { IconPlus, IconTrash } from "@/components/Icons";
+import type { Conversation } from "@/lib/types";
 
 type Props = {
   conversations: Conversation[] | null; // null = chargement depuis le navigateur
@@ -24,11 +24,6 @@ export default function Sidebar({ conversations, activeId, runningId, open, onNe
     <>
       {open && <div className="scrim" onClick={onClose} aria-hidden="true" />}
       <aside className="sidebar" data-open={open} aria-label="Conversations">
-        <div className="brand">
-          <LogoMark size={30} />
-          <span className="brand-name">{APP_NAME}</span>
-        </div>
-
         <button type="button" className="btn btn-new" onClick={onNew}>
           <IconPlus size={16} /> Nouvelle conversation
         </button>
@@ -92,7 +87,7 @@ export default function Sidebar({ conversations, activeId, runningId, open, onNe
           </ul>
         </nav>
 
-        <p className="side-foot">Conversations enregistrées uniquement dans ce navigateur.</p>
+        <p className="side-foot">Enregistrées uniquement dans ce navigateur.</p>
       </aside>
     </>
   );

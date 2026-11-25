@@ -3,7 +3,8 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 /**
- * Rendu Markdown SÛR : le texte vient du modèle (donc potentiellement d'une injection de prompt).
+ * Rendu Markdown à risque BORNÉ (pas supprimé) : le texte vient du modèle, donc potentiellement d'une injection de prompt.
+ * Risque résiduel : un lien injecté peut porter des données dans son URL, mais seulement si l'utilisateur clique.
  * - pas de HTML brut (react-markdown sans rehype-raw, et `skipHtml`) ;
  * - AUCUNE image : une image distante enverrait des données à un site tiers au simple affichage ;
  * - liens http/https uniquement, ouverts dans un nouvel onglet, avec l'hôte visible au survol.

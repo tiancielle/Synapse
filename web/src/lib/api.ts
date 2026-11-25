@@ -1,8 +1,10 @@
 import { parseSse } from "./sse";
-import type { AgentEvent, Health } from "./types";
+import { localApiUrl, toAuditEntries, toHealth } from "./parse";
+import type { AgentEvent, AuditEntry, Health } from "./types";
 
-// L'API tourne en local ; l'adresse peut être changée avec NEXT_PUBLIC_API_URL (fichier .env.local).
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+// L'API tourne en local ; le port peut être changé avec NEXT_PUBLIC_API_URL (fichier .env.local).
+// Une adresse non locale est ignorée (règle 4 : API locale uniquement).
+export const API_URL = localApiUrl(process.env.NEXT_PUBLIC_API_URL);
 
 export type ApiErrorKind = "network" | "conflict" | "invalid" | "http" | "interrupted";
 
@@ -18,15 +20,14 @@ export class ApiError extends Error {
 export async function getHealth(): Promise<Health> {
   const res = await fetch(`${API_URL}/api/health`, { cache: "no-store", signal: AbortSignal.timeout(4000) });
   if (!res.ok) throw new Error(`Erreur ${res.status}`);
-  const data: unknown = await res.json();
-  const d = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
-  return {
-    status: typeof d.status === "string" ? d.status : "ok",
-    source: d.source === "google" ? "google" : "test",
-    defenses: d.defenses === "aucune" || d.defenses === "registre" ? d.defenses : "toutes",
-    model: d.model === "demo" ? "demo" : "llm",
-    llm: typeof d.llm === "string" && d.llm ? d.llm : null, // absent tant que le backend ne l'envoie pas
-  };
+  return toHealth(await res.json());
+}
+
+/** Journal d'audit de l'API (en mémoire depuis son démarrage). */
+export async function getAudit(): Promise<AuditEntry[]> {
+  const res = await fetch(`${API_URL}/api/audit`, { cache: "no-store", signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`Erreur ${res.status}`);
+  return toAuditEntries(await res.json());
 }
 
 async function httpError(res: Response, path: string): Promise<ApiError> {
