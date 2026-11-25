@@ -152,12 +152,47 @@ def test_empty_or_too_long_search_is_refused(b, requete):
         b.chercher_issues(requete)
 
 
+def test_public_project_search_returns_cards_only(b):
+    projets, _ = b.chercher_projets("cours git")
+    assert [p["depot"] for p in projets] == ["open-cours/cours-git-debutant"]
+    assert set(projets[0]) == {"depot", "description", "langage", "topics", "etoiles", "mis_a_jour"}
+    python, _ = b.chercher_projets("cours", langage="python")
+    assert [p["depot"] for p in python] == ["secu-lab/cours-injection-prompt", "promo-bot/cours-python-gratuit"]
+    assert b.chercher_projets("inexistant")[0] == []
+
+
+@pytest.mark.parametrize("langage", ["Jupyter Notebook", "python:x", "a" * 31, "c'est"])
+def test_project_search_language_is_a_single_validated_word(b, langage):
+    with pytest.raises(ErreurOutil, match="langage"):
+        b.chercher_projets("cours", langage=langage)
+
+
+def test_a_public_project_found_by_search_still_cannot_be_read(b):
+    """D6 : la recherche voit tout GitHub, mais la LECTURE reste limitée à la liste blanche."""
+    trouve = b.chercher_projets("toxiques")[0][0]["depot"]
+    for appel in (lambda: b.lire_fichier(trouve, "README.md"), lambda: b.lister_issues(trouve),
+                  lambda: b.lister_commits(trouve)):
+        with pytest.raises(ErreurOutil, match="Dépôt non autorisé"):
+            appel()
+
+
 def test_search_cannot_reach_the_private_repo_through_its_text(b):
     resultats, _ = b.chercher_issues("repo:demo/prive CANARI")
     assert resultats == [] and CANARI not in json.dumps(resultats)
 
 
 # --- jeu de données : nouveaux vecteurs ---------------------------------------------------------
+
+def test_public_search_catalogue_has_one_attack_and_one_lookalike():
+    publics = json.loads(FIXTURE.read_text(encoding="utf-8"))["recherche_publique"]
+    assert [p["_vector"] for p in publics if p["_attack"]] == ["repo_search"]
+    assert [p["_vector"] for p in publics if p.get("_hard_negative")] == ["repo_search"]
+
+
+def test_the_search_attack_reaches_the_model_and_labels_do_not(b):
+    sortie = json.dumps(b.chercher_projets("cours python")[0], ensure_ascii=False)
+    assert ATTAQUANT in sortie and "_attack" not in sortie and "_vector" not in sortie
+
 
 def _nouveaux_vecteurs(brut):
     elements = [brut[TEST]["infos"], brut[Y]["infos"]]
@@ -206,8 +241,8 @@ def test_detector_measurement_on_new_vectors(brut):
 # --- taille des descriptions (petit modèle, contexte de 8192 jetons) ---------------------------
 
 def test_github_tool_specs_stay_small_enough_for_a_small_model():
-    """Mesuré au GH-5 : 9 outils, 2319 caractères de descriptions, 5288 de spécifications JSON.
-    Borne avec marge : au-delà, revoir les descriptions avant d'ajouter un outil."""
+    """Mesuré au GH-5 : 9 outils, 2319 caractères de descriptions, 5288 de spécifications JSON ;
+    + chercher_projets (D6) : voir le rapport. Borne avec marge : au-delà, revoir les descriptions."""
     import asyncio
     from agent.runtime import serveurs_par_defaut
     from agent.tools import Toolbox
@@ -217,8 +252,8 @@ def test_github_tool_specs_stay_small_enough_for_a_small_model():
         async with Toolbox("github", spec.script, env=spec.env) as tb:
             return tb.specs
     specs = asyncio.run(scenario())
-    assert sum(len(s["description"] or "") for s in specs) <= 2600
-    assert sum(len(json.dumps(s, ensure_ascii=False)) for s in specs) <= 6000
+    assert sum(len(s["description"] or "") for s in specs) <= 2800
+    assert sum(len(json.dumps(s, ensure_ascii=False)) for s in specs) <= 6600
 
 
 # --- backend réel simulé ------------------------------------------------------------------------
@@ -235,8 +270,8 @@ class Api:
     def __call__(self, request):
         chemin = request.url.raw_path.decode().split("?")[0]
         self.vues.append((request.method, chemin, {k: v[0] for k, v in parse_qs(urlsplit(str(request.url)).query).items()}))
-        statut, corps = self.routes.get(chemin, (404, {"message": "Not Found"}))
-        return httpx.Response(statut, json=corps)
+        statut, corps, *entetes = self.routes.get(chemin, (404, {"message": "Not Found"}))
+        return httpx.Response(statut, json=corps, headers=entetes[0] if entetes else None)
 
 
 def reel(api, depots=(D1, D2)):
@@ -254,6 +289,92 @@ def test_real_lister_depots_queries_only_allowlisted_repos_and_survives_one_fail
     assert depots[1] == {"depot": D2, "erreur": f"Dépôt introuvable ou inaccessible avec ce jeton : {D2}."}
     assert [c for _, c, _ in api.vues] == [f"/repos/{D1}", f"/repos/{D2}"]          # jamais /user/repos
     assert "NE_DOIT_PAS_SORTIR" not in json.dumps(depots)
+
+
+# --- D7 : découverte des dépôts du compte (liste blanche vide) ---------------------------------------
+
+def _fiche_brute(nom, push="2026-11-20T10:00:00Z"):
+    return {"full_name": nom, "description": "Desc", "language": "Python", "topics": [], "pushed_at": push,
+            "private": False, "default_branch": "main", "temp_clone_token": "NE_DOIT_PAS_SORTIR"}
+
+
+def decouvert(api):
+    return GithubBackend([], source_jeton=lambda: "JETON_FACTICE", transport=httpx.MockTransport(api),
+                         tz=timezone.utc, decouverte=True)
+
+
+def test_discovery_lists_only_owned_repos_once_and_lister_depots_needs_no_other_call():
+    api = Api({"/user/repos": (200, [_fiche_brute(D1), _fiche_brute(D2, "2026-11-01T10:00:00Z")])})
+    b = decouvert(api)
+    assert api.vues == []                                   # rien au démarrage : découverte au premier appel
+    depots = b.lister_depots()
+    assert [d["depot"] for d in depots] == [D1, D2] and depots[0]["dernier_push"] == "2026-11-20T10:00"
+    assert "NE_DOIT_PAS_SORTIR" not in json.dumps(depots)
+    assert api.vues == [("GET", "/user/repos", {"affiliation": "owner", "sort": "pushed", "direction": "desc",
+                                                 "per_page": "100"})]
+    b.lister_depots()
+    assert len(api.vues) == 1                               # liste mémorisée : un seul appel /user/repos
+
+
+def test_discovered_allowlist_still_refuses_other_repos_before_any_request():
+    api = Api({"/user/repos": (200, [_fiche_brute(D1)])})
+    b = decouvert(api)
+    with pytest.raises(ErreurOutil, match="Dépôt non autorisé"):
+        b.lister_issues("autre-compte/depot")
+    assert [c for _, c, _ in api.vues] == ["/user/repos"]
+
+
+def test_discovery_aggregates_at_most_the_ten_most_recently_pushed_repos():
+    noms = [f"proprio-test/depot-{i:02d}" for i in range(12)]
+    routes = {"/user/repos": (200, [_fiche_brute(n) for n in noms])}
+    routes.update({f"/repos/{n}/commits": (200, []) for n in noms})
+    api = Api(routes)
+    decouvert(api).lister_commits()
+    assert [c for _, c, _ in api.vues][1:] == [f"/repos/{n}/commits" for n in noms[:10]]
+
+
+@pytest.mark.parametrize("corps,attendu", [
+    ([_fiche_brute(f"proprio-test/d{i}") for i in range(51)], "Plus de 50 dépôts"),
+    ([], "Aucun dépôt visible"),
+    ([{"full_name": "../etc"}], "réponse inattendue"),
+    ({"pas": "une liste"}, "réponse inattendue"),
+])
+def test_discovery_refuses_too_many_none_or_malformed_repos(corps, attendu):
+    b = decouvert(Api({"/user/repos": (200, corps)}))
+    with pytest.raises(ErreurOutil, match=attendu):
+        b.lister_depots()
+
+
+def test_discovery_accepts_exactly_fifty_repos_but_refuses_a_next_page():
+    cinquante = [_fiche_brute(f"proprio-test/d{i}") for i in range(50)]
+    assert len(decouvert(Api({"/user/repos": (200, cinquante)})).lister_depots()) == 50
+    suivante = {"Link": '<https://api.github.com/user/repos?page=2>; rel="next"'}
+    b = decouvert(Api({"/user/repos": (200, cinquante[:3], suivante)}))
+    with pytest.raises(ErreurOutil, match="Plus de 50 dépôts"):
+        b.lister_depots()
+
+
+def test_refusal_in_a_large_discovered_list_does_not_list_every_repo_name():
+    noms = [f"proprio-test/d{i}" for i in range(12)]
+    b = decouvert(Api({"/user/repos": (200, [_fiche_brute(n) for n in noms])}))
+    with pytest.raises(ErreurOutil, match="voir lister_depots") as exc:
+        b.lister_issues("autre-compte/depot")
+    assert not any(n in str(exc.value) for n in noms)
+
+
+def test_a_failed_discovery_is_not_memorised():
+    api = Api({"/user/repos": (401, {"message": "Bad credentials"})})
+    b = decouvert(api)
+    with pytest.raises(ErreurOutil, match="jeton invalide"):
+        b.lister_depots()
+    api.routes["/user/repos"] = (200, [_fiche_brute(D1)])
+    assert [d["depot"] for d in b.lister_depots()] == [D1]
+
+
+def test_a_written_allowlist_never_triggers_discovery():
+    api = Api({f"/repos/{D1}": (200, _fiche_brute(D1))})
+    reel(api, depots=(D1,)).lister_depots()
+    assert "/user/repos" not in [c for _, c, _ in api.vues]
 
 
 def test_real_commits_send_iso_utc_bounds_author_and_branch_and_handle_an_empty_repo():
@@ -337,6 +458,24 @@ def test_real_issues_pass_the_creator_filter():
     api = Api({f"/repos/{D1}/issues": (200, [])})
     reel(api, depots=(D1,)).lister_issues(auteur="moi")
     assert api.vues[0][2]["creator"] == "moi"
+
+
+def test_real_project_search_builds_q_server_side_and_returns_cards_only():
+    item = {"full_name": "inconnu/projet", "description": "Desc", "language": "Python", "topics": ["a"],
+            "stargazers_count": 42, "pushed_at": "2026-10-10T09:00:00Z", "owner": {"login": "inconnu"},
+            "html_url": "https://github.com/inconnu/projet", "private": False}
+    api = Api({"/search/repositories": (200, {"total_count": 5, "items": [item]})})
+    projets, reste = reel(api).chercher_projets("user:moi org:x cours OR git", langage="Python", limite=3)
+    assert projets == [{"depot": "inconnu/projet", "description": "Desc", "langage": "Python", "topics": ["a"],
+                        "etoiles": 42, "mis_a_jour": "2026-10-10T09:00"}] and reste is True
+    assert api.vues == [("GET", "/search/repositories", {"q": "user moi org x cours git is:public language:Python",
+                                                         "per_page": "3"})]
+
+
+def test_real_project_search_never_asks_for_private_repos():
+    api = Api({"/search/repositories": (200, {"total_count": 0, "items": []})})
+    reel(api).chercher_projets("is:private secret")
+    assert api.vues[0][2]["q"] == "is private secret is:public"          # « is:private » du modèle : neutralisé
 
 
 def test_search_validation_error_gives_a_fixed_message():

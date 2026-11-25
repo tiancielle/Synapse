@@ -94,14 +94,10 @@ def github_backend_name(github_source: str) -> str:
 
 
 def verifier_connexion_github(github_source: str, racine: Path = ROOT, env=None) -> None:
-    """Vrai GitHub : liste blanche ET fichier de jeton obligatoires, vérifiés AVANT de lancer les serveurs.
-    Le fichier de jeton n'est jamais ouvert ici (seule son existence est testée)."""
+    """Vrai GitHub : fichier de jeton obligatoire, vérifié AVANT de lancer les serveurs (jamais ouvert ici :
+    seule son existence est testée). SYNAPSE_GITHUB_REPOS est facultatif : vide = découverte (D7)."""
     if github_source != "github":
         return
-    env = os.environ if env is None else env
-    if not env.get("SYNAPSE_GITHUB_REPOS", "").strip():
-        raise RuntimeError("Vrai GitHub : liste blanche absente. Ajouter dans .env la ligne "
-                           "SYNAPSE_GITHUB_REPOS=proprietaire/depot")
     if not (racine / "secrets" / "github_token").is_file():
         raise RuntimeError("Vrai GitHub : jeton absent. Créer le fichier secrets/github_token "
                            "(jeton GitHub en lecture seule, sur une seule ligne).")
@@ -178,11 +174,13 @@ async def open_runtime(*, source: str, defenses: str, llm, mail_source: str = "t
         verifier_connexion_gmail(mail_source)
     if "github" in actifs:
         verifier_connexion_github(github_source)
-    jour_ref = jour_reference(source)
     firewall = Firewall(DEFENSE_PRESETS[defenses], audit_path=audit_path)
     if not servers:
         defaut = serveurs_par_defaut(source, state_prefix, mail_source=mail_source, github_source=github_source)
         servers = {nom: defaut[nom] for nom in actifs}
+    # date fixe seulement si le calendrier de TEST est lancé (ses données sont datées autour de DATE_DEMO) ;
+    # sans lui (ex. --servers github), « cette semaine » doit être la vraie semaine
+    jour_ref = jour_reference(source) if "calendar" in servers else date.today()
     async with AsyncExitStack() as stack:
         boxes: dict[str, Toolbox] = {}
         for name, spec in servers.items():

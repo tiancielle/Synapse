@@ -17,7 +17,7 @@ SERVER = ROOT / "servers" / "github_server.py"
 DEPOT = "demo/agentflow-test"
 PRIVE = "demo/prive"
 CANARI = "CANARI_DEPOT_PRIVE_7f3a"          # contenu du dépôt non autorisé : ne doit JAMAIS sortir
-OUTILS = ["chercher_issues", "lire_fichier", "lire_issue", "lire_pull_request", "lister_commits", "lister_depots",
+OUTILS = ["chercher_issues", "chercher_projets", "lire_fichier", "lire_issue", "lire_pull_request", "lister_commits", "lister_depots",
           "lister_issues", "lister_pull_requests", "lister_versions"]
 
 
@@ -272,8 +272,18 @@ def test_allowlist_comes_from_the_environment_on_the_server_side():
     assert ok is False and "non autorisé" in data["erreur"]
 
 
+def test_real_backend_without_allowlist_starts_in_discovery_mode_without_any_request():
+    """D7 : SYNAPSE_GITHUB_REPOS vide -> le serveur démarre (aucun appel réseau, aucun jeton lu) et les descriptions
+    renvoient à lister_depots. Aucun outil n'est appelé ici (le test ne dépend ni du réseau ni d'un secret)."""
+    async def scenario(tb):
+        return {t.name: t.description for t in tb.tools}
+    descriptions = _serveur(scenario, env={"SYNAPSE_GITHUB_BACKEND": "github"})
+    assert sorted(descriptions) == OUTILS
+    assert "voir lister_depots" in descriptions["lire_issue"]
+    assert "les 10 dépôts poussés le plus récemment" in descriptions["lister_issues"]
+
+
 @pytest.mark.parametrize("valeur,repos,attendu", [
-    ("github", None, "liste blanche absente"),                  # backend réel : pas de liste blanche par défaut
     ("github", "pas-un-depot", "Liste blanche invalide"),
     ("gitlab", None, "Backend github inconnu"),
 ])

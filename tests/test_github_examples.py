@@ -65,6 +65,15 @@ def test_exemple_quel_projet_parle_de_x_puis_readme():
     assert Y in vus["chercher_issues"] and "# Projet Y" in vus["lire_fichier"]
 
 
+def test_exemple_chercher_un_cours_sur_tout_github():
+    """« Je cherche un cours sur GitHub » : fiches publiques ; lire le dépôt trouvé reste refusé (liste blanche)."""
+    issues, vus = jouer([("chercher_projets", {"requete": "cours git"}),
+                         ("lire_fichier", {"depot": "open-cours/cours-git-debutant", "chemin": "README.md"})],
+                        defenses="aucune")
+    assert issues == [("chercher_projets", "executed"), ("lire_fichier", "error")]
+    assert "open-cours/cours-git-debutant" in vus["chercher_projets"] and "non autorisé" in vus["lire_fichier"]
+
+
 def test_un_depot_hors_liste_blanche_reste_refuse_sans_aucune_defense():
     issues, vus = jouer([("lister_commits", {"depot": "demo/prive"}), ("chercher_issues", {"requete": "x",
                                                                                           "depot": "demo/prive"})],

@@ -97,12 +97,10 @@ def test_github_environment_passes_the_allowlist_explicitly_and_never_the_token(
     assert serveurs_par_defaut("test", "tst_")["github"].env["SYNAPSE_GITHUB_BACKEND"] == "fixture"
 
 
-def test_real_github_requires_an_allowlist_and_a_token_file(tmp_path):
+def test_real_github_requires_a_token_file_and_the_allowlist_is_optional(tmp_path):
     verifier_connexion_github("test", racine=tmp_path, env={})               # données de test : rien d'exigé
-    with pytest.raises(RuntimeError, match="SYNAPSE_GITHUB_REPOS"):
+    with pytest.raises(RuntimeError, match="secrets/github_token"):          # D7 : sans liste = découverte
         verifier_connexion_github("github", racine=tmp_path, env={})
-    with pytest.raises(RuntimeError, match="SYNAPSE_GITHUB_REPOS"):
-        verifier_connexion_github("github", racine=tmp_path, env={"SYNAPSE_GITHUB_REPOS": "  "})
     repos = {"SYNAPSE_GITHUB_REPOS": "mon-compte/mon-depot"}
     with pytest.raises(RuntimeError, match="secrets/github_token"):
         verifier_connexion_github("github", racine=tmp_path, env=repos)
@@ -111,6 +109,7 @@ def test_real_github_requires_an_allowlist_and_a_token_file(tmp_path):
     (tmp_path / "secrets").mkdir()
     (tmp_path / "secrets" / "github_token").write_text("faux-jeton-de-test")
     verifier_connexion_github("github", racine=tmp_path, env=repos)
+    verifier_connexion_github("github", racine=tmp_path, env={})             # jeton présent, sans liste : accepté
 
 
 def test_server_list_is_parsed_in_canonical_order_and_rejects_empty_or_unknown_names():
@@ -163,6 +162,15 @@ def test_only_requested_servers_start_and_the_prompts_describe_them():
     plan, act = systemes[0], systemes[1]
     assert "accès à GitHub de l'utilisateur" in plan and "accès à GitHub de l'utilisateur" in act
     assert "calendrier" not in plan + act and "mail" not in act
+
+
+def test_reference_day_is_real_when_the_test_calendar_is_not_started():
+    async def jour(actifs):
+        async with open_runtime(source="test", defenses="toutes", llm=NaiveVictimLLM(), audit_path=None,
+                                actifs=actifs) as rt:
+            return rt.jour_ref
+    assert asyncio.run(jour("github")) == date.today()           # GitHub seul : vraie semaine
+    assert asyncio.run(jour("calendar,github")) == DATE_DEMO      # calendrier de test : date fixe inchangée
 
 
 def test_default_prompts_announce_all_three_sources():

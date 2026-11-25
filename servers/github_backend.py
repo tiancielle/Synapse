@@ -39,7 +39,8 @@ MAX_ETIQUETTES = 20
 MAX_ETIQUETTE = 50
 TAILLE_MAX_FICHIER = 1_000_000   # octets : au-delà, l'API JSON de GitHub ne renvoie plus le contenu
 ETATS = ("open", "closed", "all")
-MAX_DEPOTS = 10               # taille maximale de la liste blanche
+MAX_DEPOTS = 10               # taille maximale de la liste blanche écrite à la main ; dépôts agrégés quand depot est vide
+MAX_DEPOTS_DECOUVERTS = 50    # D7 : liste blanche découverte (dépôts dont le compte du jeton est propriétaire)
 MAX_DESCRIPTION = 300
 MAX_TOPICS = 20
 MAX_MESSAGE = 200             # première ligne d'un message de commit
@@ -83,6 +84,8 @@ def verifier_depot(depot: str, autorises: list[str]) -> str:
     for a in autorises:
         if a.lower() == d.lower():
             return a
+    if len(autorises) > MAX_DEPOTS:             # liste découverte (D7) : pas jusqu'à 50 noms dans le message
+        raise ErreurOutil(f"Dépôt non autorisé : {d}. Dépôts autorisés : voir lister_depots.")
     raise ErreurOutil(f"Dépôt non autorisé : {d}. Dépôts autorisés : {', '.join(autorises) or 'aucun'}.")
 
 
@@ -139,6 +142,15 @@ def verifier_branche(branche: str, depot: str = "x") -> str:
 
 
 _SHA = re.compile(r"[0-9a-f]{40}")
+_LANGAGE = re.compile(r"[A-Za-z0-9+#.-]{1,30}")
+
+
+def verifier_langage(langage: str) -> str:
+    """Filtre facultatif de chercher_projets : un seul mot (ex. Python, TypeScript, C++)."""
+    lang = (langage or "").strip()
+    if lang and not _LANGAGE.fullmatch(lang):
+        raise ErreurOutil("« langage » invalide : un seul mot (ex. Python, TypeScript, C++).")
+    return lang
 
 
 def lire_periode_github(depuis: str, jusqu_a: str) -> tuple[datetime | None, datetime | None]:
@@ -240,6 +252,19 @@ def version(depot: str, v: dict) -> dict:
             "release": bool(v.get("release")), "date": v.get("date") or ""}
 
 
+def projet(p: dict) -> dict:
+    """Fiche d'un dépôt PUBLIC trouvé par chercher_projets (hors liste blanche : aucun contenu lu)."""
+    try:
+        etoiles = max(0, int(p.get("etoiles") or 0))
+    except (TypeError, ValueError):
+        etoiles = 0
+    return {"depot": _borner(str(p.get("depot") or ""), 201),
+            "description": _borner(str(p.get("description") or ""), MAX_DESCRIPTION),
+            "langage": _borner(str(p.get("langage") or ""), MAX_ETIQUETTE),
+            "topics": [_borner(str(t), MAX_ETIQUETTE) for t in (p.get("topics") or [])[:MAX_TOPICS]],
+            "etoiles": etoiles, "mis_a_jour": p.get("mis_a_jour") or ""}
+
+
 def resultat_recherche(depot: str, item: dict, genre: str) -> dict:
     return {"depot": depot, "type": genre, **{k: v for k, v in resume(item).items() if k != "etiquettes"}}
 
@@ -264,7 +289,7 @@ class _Agregation:
     def _cibles(self, depot: str) -> list[str]:
         if (depot or "").strip():
             return [verifier_depot(depot, self.depots_autorises)]
-        return list(self.depots_autorises)
+        return list(self.depots_autorises)[:MAX_DEPOTS]   # découverte : les plus récemment poussés d'abord
 
     def _agreger(self, depot: str, n: int, par_depot) -> tuple[list[dict], bool]:
         """`par_depot(nom)` -> (éléments de sortie avec clé « date », il_en_reste). Plusieurs dépôts : tri par date."""
@@ -285,7 +310,18 @@ class FixtureGithubBackend(_Agregation):
     def __init__(self, fixture_path: Path, depots_autorises: list[str]):
         data = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
         self._depots = {nom.lower(): contenu for nom, contenu in data["depots"].items()}
+        self._publics = data.get("recherche_publique") or []      # catalogue de la recherche de projets
         self.depots_autorises = list(depots_autorises)
+
+    def chercher_projets(self, requete: str, langage: str = "", limite=LIMITE_DEFAUT) -> tuple[list[dict], bool]:
+        mots = nettoyer_requete(requete)
+        lang = verifier_langage(langage).lower()
+        n = borner_limite(limite)
+        hits = [p for p in self._publics
+                if tous_les_mots(f"{p['depot']} {p.get('description') or ''} {' '.join(p.get('topics') or [])}", mots)
+                and (not lang or str(p.get("langage") or "").lower() == lang)]
+        hits.sort(key=lambda p: p.get("etoiles") or 0, reverse=True)
+        return [projet(p) for p in hits[:n]], len(hits) > n
 
     def _depot(self, depot: str) -> tuple[str, dict]:
         nom = verifier_depot(depot, self.depots_autorises)      # liste blanche AVANT tout accès aux données
@@ -476,16 +512,54 @@ class GithubBackend(_Agregation):
     """
 
     def __init__(self, depots_autorises: list[str], source_jeton: Callable[[], str], *, transport=None,
-                 tz: tzinfo | None = None, base_url: str = API_GITHUB):
-        if not depots_autorises:
+                 tz: tzinfo | None = None, base_url: str = API_GITHUB, decouverte: bool = False):
+        """`decouverte` (D7) : liste blanche vide -> calculée au premier appel d'outil par GET /user/repos
+        (affiliation=owner : seulement les dépôts du compte du jeton, au plus MAX_DEPOTS_DECOUVERTS)."""
+        if not depots_autorises and not decouverte:
             raise RuntimeError("Backend github : liste blanche absente. "
                                "Définir SYNAPSE_GITHUB_REPOS=proprietaire/depot (plusieurs : séparés par des virgules).")
-        self.depots_autorises = list(depots_autorises)
+        self.decouverte = not depots_autorises
+        self._depots = list(depots_autorises) if depots_autorises else None
+        self._infos: dict[str, dict] = {}       # découverte : fiches déjà reçues (lister_depots sans autre appel)
         self._source_jeton = source_jeton
         self._transport = transport
         self._tz = tz
         self._base_url = base_url
         self._client = None
+
+    @property
+    def depots_autorises(self) -> list[str]:
+        if self._depots is None:
+            self._depots = self._decouvrir()    # échec -> ErreurOutil, rien n'est mémorisé (nouvel essai au prochain appel)
+        return self._depots
+
+    def _decouvrir(self) -> list[str]:
+        """GET /user/repos : dépôts dont le compte du jeton est PROPRIÉTAIRE (pas ceux des organisations ni des
+        collaborations), les plus récemment poussés d'abord. Plus de MAX_DEPOTS_DECOUVERTS -> refus."""
+        j, reponse = self._get("/user/repos", {"affiliation": "owner", "sort": "pushed", "direction": "desc",
+                                               "per_page": 100}, introuvable="Liste des dépôts indisponible.")
+        if not isinstance(j, list):
+            raise ErreurOutil(REPONSE_INATTENDUE)
+        if len(j) > MAX_DEPOTS_DECOUVERTS or _page_suivante(reponse):
+            raise ErreurOutil(f"Plus de {MAX_DEPOTS_DECOUVERTS} dépôts visibles par le jeton : en choisir au plus "
+                              f"{MAX_DEPOTS} dans SYNAPSE_GITHUB_REPOS, ou restreindre le jeton "
+                              "(Only select repositories).")
+        noms = []
+        for r in j:
+            nom = str(r.get("full_name") or "") if isinstance(r, dict) else ""
+            if not _DEPOT.fullmatch(nom) or ".." in nom:
+                raise ErreurOutil(REPONSE_INATTENDUE)
+            noms.append(nom)
+            self._infos[nom] = self._fiche(nom, r)
+        if not noms:
+            raise ErreurOutil("Aucun dépôt visible par le jeton GitHub.")
+        return noms
+
+    def _fiche(self, nom: str, j: dict) -> dict:
+        return info_depot(nom, {
+            "description": j.get("description"), "langage": j.get("language"), "topics": j.get("topics"),
+            "dernier_push": _date_locale(j.get("pushed_at"), self._tz), "prive": j.get("private"),
+            "branche_defaut": j.get("default_branch")})
 
     def _http(self):
         if self._client is None:
@@ -517,7 +591,8 @@ class GithubBackend(_Agregation):
         if statut in (403, 429):
             raise ErreurOutil("Accès GitHub refusé ou limite de requêtes atteinte. Réessayer plus tard.")
         if 300 <= statut < 400:                 # redirections jamais suivies (follow_redirects=False)
-            raise ErreurOutil("Dépôt renommé ou déplacé sur GitHub : mettre à jour SYNAPSE_GITHUB_REPOS.")
+            raise ErreurOutil("Dépôt renommé ou déplacé sur GitHub : mettre à jour SYNAPSE_GITHUB_REPOS "
+                              "(ou, sans cette ligne, redémarrer AgentFlow).")
         if statut != 200:
             raise ErreurOutil(REPONSE_INATTENDUE)
         try:
@@ -585,7 +660,10 @@ class GithubBackend(_Agregation):
 
     @_reponse_attendue
     def lister_depots(self) -> list[dict]:
-        """Un appel GET /repos/{o}/{r} par dépôt de la LISTE BLANCHE (jamais /user/repos)."""
+        """Liste blanche écrite : un appel GET /repos/{o}/{r} par dépôt. Découverte (D7) : les fiches reçues de
+        /user/repos, sans autre appel."""
+        if self.decouverte:
+            return [self._infos[nom] for nom in self.depots_autorises]
         sortie = []
         for nom in self.depots_autorises:
             _, base = self._base(nom)
@@ -594,10 +672,7 @@ class GithubBackend(_Agregation):
             except ErreurOutil as exc:              # un dépôt inaccessible n'empêche pas de lister les autres
                 sortie.append({"depot": nom, "erreur": str(exc)})
                 continue
-            sortie.append(info_depot(nom, {
-                "description": j.get("description"), "langage": j.get("language"), "topics": j.get("topics"),
-                "dernier_push": _date_locale(j.get("pushed_at"), self._tz), "prive": j.get("private"),
-                "branche_defaut": j.get("default_branch")}))
+            sortie.append(self._fiche(nom, j))
         return sortie
 
     @_reponse_attendue
@@ -657,6 +732,25 @@ class GithubBackend(_Agregation):
         versions = [x for x in fusionner_versions(tags, releases) if not v or tous_les_mots(x["nom"], v)]
         reste = len(versions) > n or _page_suivante(rep_tags) or _page_suivante(rep_rel)
         return [version(nom, x) for x in versions[:n]], reste
+
+    @_reponse_attendue
+    def chercher_projets(self, requete: str, langage: str = "", limite=LIMITE_DEFAUT) -> tuple[list[dict], bool]:
+        """GET /search/repositories (décision D6) : recherche PUBLIQUE, hors liste blanche, mais FICHES seulement
+        (aucun contenu de dépôt lu ; les outils de lecture restent limités à la liste blanche).
+        q = mots simples + language: validé, construit ici : aucun qualificateur du modèle (user:, org:...)."""
+        mots = nettoyer_requete(requete)
+        lang = verifier_langage(langage)
+        n = borner_limite(limite)
+        # is:public : le jeton couvre aussi des dépôts privés ; la recherche de projets n'en renvoie jamais
+        q = mots + " is:public" + (f" language:{lang}" if lang else "")
+        j, _ = self._get("/search/repositories", {"q": q, "per_page": n}, introuvable="Recherche indisponible.")
+        items = (j or {}).get("items") or []
+        fiches = [projet({"depot": it.get("full_name"), "description": it.get("description"),
+                          "langage": it.get("language"), "topics": it.get("topics"),
+                          "etoiles": it.get("stargazers_count"),
+                          "mis_a_jour": _date_locale(it.get("pushed_at") or it.get("updated_at"), self._tz)})
+                  for it in items[:n]]
+        return fiches, int((j or {}).get("total_count") or 0) > len(fiches)
 
     @_reponse_attendue
     def chercher_issues(self, requete: str, depot: str = "", etat: str = "all", limite=LIMITE_DEFAUT

@@ -3,8 +3,9 @@
 Backend choisi par SYNAPSE_GITHUB_BACKEND :
   fixture (défaut) : dépôts synthétiques (data/fixtures/github.json)
   github           : vrai GitHub, API REST en lecture seule (requêtes GET uniquement)
-Liste blanche des dépôts : SYNAPSE_GITHUB_REPOS (« proprietaire/depot,... »).
-  fixture : demo/agentflow-test par défaut ; github : OBLIGATOIRE (sinon le serveur refuse de démarrer).
+Liste blanche des dépôts : SYNAPSE_GITHUB_REPOS (« proprietaire/depot,... », 10 au maximum).
+  fixture : dépôts demo/ par défaut ; github : si vide, découverte (D7) au premier appel d'outil des dépôts dont
+  le compte du jeton est propriétaire (GET /user/repos, 50 au maximum).
 Jeton (backend github) : SYNAPSE_GITHUB_TOKEN ou secrets/github_token, lu au premier appel d'outil.
   Lancé par l'agent (chat.py, run_api.py) : SEUL le fichier secrets/github_token est utilisé, car le SDK mcp
   ne transmet pas os.environ au serveur et le runtime ne lui passe jamais le jeton.
@@ -19,8 +20,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
-from github_backend import (LIMITE_DEFAUT, LIMITE_MAX, ErreurOutil, FixtureGithubBackend, GithubBackend,
-                            lire_jeton, lire_liste_blanche)
+from github_backend import (LIMITE_DEFAUT, LIMITE_MAX, MAX_DEPOTS, ErreurOutil, FixtureGithubBackend,
+                            GithubBackend, lire_jeton, lire_liste_blanche)
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -35,11 +36,16 @@ OUTILS_ATTENDUS = outils_github_attendus(BACKEND_NAME)      # valeur inconnue ->
 if BACKEND_NAME == "fixture":
     backend = FixtureGithubBackend(ROOT / "data" / "fixtures" / "github.json",
                                    lire_liste_blanche(os.getenv("SYNAPSE_GITHUB_REPOS", DEPOTS_FIXTURE)))
-else:   # "github" : pas de liste blanche par défaut -> GithubBackend refuse de démarrer sans elle
+else:   # "github" : SYNAPSE_GITHUB_REPOS vide -> découverte (D7) des dépôts du compte au premier appel
     backend = GithubBackend(lire_liste_blanche(os.getenv("SYNAPSE_GITHUB_REPOS", "")),
-                            source_jeton=lambda: lire_jeton(ROOT))
+                            source_jeton=lambda: lire_jeton(ROOT), decouverte=True)
 
-DEPOTS = ", ".join(backend.depots_autorises)
+if getattr(backend, "decouverte", False):       # liste inconnue au démarrage (aucun appel réseau ici)
+    DEPOTS = "ceux du compte, voir lister_depots"
+    _TOUS = f"vide = les {MAX_DEPOTS} dépôts poussés le plus récemment ({DEPOTS})"
+else:
+    DEPOTS = ", ".join(backend.depots_autorises)
+    _TOUS = f"vide = tous les dépôts ({DEPOTS})"
 
 mcp = MCPServer("github")
 
@@ -57,7 +63,7 @@ def _ou_erreur_lisible(appel):
         raise ToolError(str(exc)) from exc
 
 
-_DEPOT_FACULTATIF = f"- depot : proprietaire/depot ; vide = tous les dépôts ({DEPOTS}).\n"
+_DEPOT_FACULTATIF = f"- depot : proprietaire/depot ; {_TOUS}.\n"
 _LIMITE = f"- limite : {LIMITE_DEFAUT} par défaut, {LIMITE_MAX} au maximum.\n"
 _LISTE = (_DEPOT_FACULTATIF + "- etat : open (défaut), closed ou all.\n"
           "- auteur : identifiant GitHub de l'auteur (facultatif).\n" + _LIMITE)
@@ -117,6 +123,17 @@ def lister_versions(depot: str, version: str = "", limite: int = LIMITE_DEFAUT) 
 def chercher_issues(requete: str, depot: str = "", etat: str = "all", limite: int = LIMITE_DEFAUT) -> dict:
     resultats, il_en_reste = _ou_erreur_lisible(lambda: backend.chercher_issues(requete, depot, etat, limite))
     return {"resultats": resultats, "limite_atteinte": il_en_reste}
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    description=("Cherche des projets publics sur tout GitHub : nom, description, langage, sujets, étoiles.\n"
+                 "- requete : mots simples (ex. détection toxicité).\n"
+                 "- langage : un mot, facultatif (ex. Python).\n" + _LIMITE),
+)
+def chercher_projets(requete: str, langage: str = "", limite: int = LIMITE_DEFAUT) -> dict:
+    projets, il_en_reste = _ou_erreur_lisible(lambda: backend.chercher_projets(requete, langage, limite))
+    return {"projets": projets, "limite_atteinte": il_en_reste}
 
 
 @mcp.tool(

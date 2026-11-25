@@ -88,7 +88,7 @@ def test_allowlist_is_checked_before_any_request():
 
 
 def test_backend_refuses_to_start_without_an_allowlist():
-    with pytest.raises(RuntimeError, match="liste blanche absente"):
+    with pytest.raises(RuntimeError, match="liste blanche absente"):     # découverte (D7) seulement si demandée
         GithubBackend([], source_jeton=lambda: JETON)
 
 

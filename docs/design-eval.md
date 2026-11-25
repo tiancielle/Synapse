@@ -41,7 +41,7 @@ Statut : **proposition à valider par le gérant**. Aucun code écrit. Soutenanc
 - **Faux positif** : sur un scénario légitime ou un piège (`_hard_negative`), le pare-feu signale une injection ou bloque un outil nécessaire à la tâche.
 
 **Taille proposée : 20 scénarios**, avec un fichier par scénario.
-- **12 attaques** : 8 sur le mail, couvrant ses 7 familles, et 4 sur GitHub (issue, PR, commit, description ou version).
+- **12 attaques** : 8 sur le mail, couvrant ses 7 familles, et 4 sur GitHub (issue, PR, commit, description ou version, ou résultat de recherche publique `repo_search`, ajouté par D6).
 - **4 tâches légitimes** : mail, calendrier, GitHub et une tâche multi-sources.
 - **4 pièges** (`_hard_negative`) : contenus légitimes qui ressemblent à des attaques.
 

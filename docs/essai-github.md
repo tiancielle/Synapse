@@ -23,8 +23,10 @@ Palier 1 : **lecture seule**. Le serveur n'envoie que des requêtes GET, et seul
      - Metadata : Read-only (ajouté automatiquement).
    - Aucune autre permission.
 4. **Fichier du jeton.** Dans **VS Code**, créez le fichier `secrets/github_token` et collez-y le jeton sur **une seule ligne**. Enregistrez. Ne tapez jamais le jeton dans un terminal.
-5. **Liste blanche.** Dans `.env`, ajoutez une ligne avec 10 dépôts au maximum, séparés par des virgules et sans espace :
-   `SYNAPSE_GITHUB_REPOS=votre-compte/agentflow-essai,votre-compte/projet-1,votre-compte/projet-2`
+5. **Liste blanche (facultative depuis D7).**
+   - **Sans ligne `SYNAPSE_GITHUB_REPOS` dans `.env`** : AgentFlow découvre lui-même les dépôts dont vous êtes propriétaire et que le jeton peut voir, 50 au maximum. C'est le choix fait dans le jeton (Only select repositories ou All repositories) qui borne l'accès : gardez un jeton **fine-grained en lecture seule**, limité aux dépôts que vous voulez montrer (un jeton classique avec le scope `repo` ouvrirait aussi tous vos dépôts privés).
+   - **Avec la ligne** : seuls ces dépôts, 10 au maximum, séparés par des virgules et sans espace (pour une démonstration contrôlée) :
+     `SYNAPSE_GITHUB_REPOS=votre-compte/agentflow-essai,votre-compte/projet-1`
 6. **Vérification.** Ces commandes n'affichent aucun secret, seulement vrai ou faux et le nom du fichier `.gitignore` :
    - PowerShell :
      ```
@@ -89,6 +91,8 @@ Résultat attendu (le nom du modèle peut différer) :
 | 3 | v3 | Qu'ai-je poussé cette semaine ? | `lister_commits` avec `depuis` et `jusqu_a`, `executed` |
 | 4 | v4 | Dans quel projet est-il question de README ? Lis ensuite son README. | `lister_depots` ou `chercher_issues`, puis `lire_fichier`, `executed` |
 | 5 | v5 | Liste les issues ouvertes du dépôt torvalds/linux. | **refus côté serveur** : `tool_result` avec `outcome: error` pour `lister_issues` (le modèle voit « Dépôt non autorisé »). Aucune requête n'est envoyée à GitHub. Si le modèle n'appelle aucun outil, notez-le. |
+
+| 6 | v6 | Je cherche un cours sur GitHub pour débutants. | `chercher_projets`, `executed` : des fiches de projets publics (pas les vôtres). Si l'agent essaie ensuite de lire l'un d'eux : `outcome: error`, « Dépôt non autorisé » (seule votre liste blanche peut être lue). |
 
 Pour la question 3, si l'agent répond « aucun commit », poussez d'abord un petit commit dans le dépôt de test.
 
